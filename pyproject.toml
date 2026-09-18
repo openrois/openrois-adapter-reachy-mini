@@ -1,0 +1,64 @@
+[project]
+name = "openrois-adapter-reachy-mini"
+version = "0.1.0a3"
+description = "OpenRoIS adapter for the Pollen Robotics Reachy Mini, the open reference platform: components, simulator, and one-command bring-up"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [{ name = "OpenRoIS contributors" }]
+keywords = ["robotics", "rois", "omg", "hri", "reachy-mini", "middleware"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+]
+dependencies = [
+    "openrois-core>=0.1.0a3",
+    "openrois-components-core>=0.1.0a3",
+]
+
+[project.optional-dependencies]
+robot = ["reachy-mini"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11", "websockets>=14"]
+
+[project.urls]
+Homepage = "https://openrois.org"
+Documentation = "https://openrois.org/docs/reference/components"
+Repository = "https://github.com/openrois/openrois-adapter-reachy-mini"
+Issues = "https://github.com/openrois/openrois-adapter-reachy-mini/issues"
+
+[project.scripts]
+openrois-adapter-reachy-mini = "openrois_adapter_reachy_mini.adapter:main"
+openrois-reachy-mini-up = "openrois_adapter_reachy_mini.bringup:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openrois_adapter_reachy_mini = ["py.typed", "openrois-profile.yaml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[[tool.mypy.overrides]]
+module = ["openrois_components_core.*", "reachy_mini.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The adapter SDK decorators are typed as plain Callables, and an editable
+# install of the SDK hides its py.typed from mypy.
+module = "openrois_adapter_reachy_mini.components"
+disable_error_code = ["untyped-decorator", "no-any-return"]

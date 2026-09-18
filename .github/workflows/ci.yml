@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install OpenRoIS from source
+        # Until the packages are on PyPI, the interface types, the engine core, and the
+        # adapter SDK come from the openrois repository.
+        run: |
+          python -m pip install --upgrade pip
+          pip install "openrois-interfaces @ git+https://github.com/openrois/openrois.git@dev#subdirectory=interfaces/python"
+          pip install "openrois-components-core @ git+https://github.com/openrois/openrois.git@dev#subdirectory=components/core"
+          pip install "openrois-core @ git+https://github.com/openrois/openrois.git@dev#subdirectory=core"
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Type check
+        run: mypy src
+      - name: Test in simulation
+        run: pytest -q
+      - name: Bring-up demo
+        run: openrois-reachy-mini-up --demo --port 0
