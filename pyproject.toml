@@ -1,11 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "openrois-adapter-reachy-mini"
-version = "0.1.0a3"
-description = "OpenRoIS adapter for the Pollen Robotics Reachy Mini, the open reference platform: components, simulator, and one-command bring-up"
+version = "0.1.0a1"
+description = "OpenRoIS adapter for the Pollen Robotics Reachy Mini: canonical RoIS components for the robot and its simulator"
 readme = "README.md"
 license = "Apache-2.0"
+authors = [
+    { name = "OpenRoIS Community" },
+]
 requires-python = ">=3.12"
-authors = [{ name = "OpenRoIS contributors" }]
 keywords = ["robotics", "rois", "omg", "hri", "reachy-mini", "middleware"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -16,49 +22,49 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Human Machine Interfaces",
 ]
+# The OpenRoIS packages come from the openrois repository, pinned to a dev commit,
+# until their first release, which the adapter joins.
 dependencies = [
-    "openrois-core>=0.1.0a3",
-    "openrois-components-core>=0.1.0a3",
+    "openrois-interfaces @ git+https://github.com/openrois/openrois@7e9c3dc8af8c688c51b0e596d4d463fa8859256a#subdirectory=interfaces/python",
+    "openrois-components-core @ git+https://github.com/openrois/openrois@7e9c3dc8af8c688c51b0e596d4d463fa8859256a#subdirectory=components/core",
+    "openrois-engine @ git+https://github.com/openrois/openrois@7e9c3dc8af8c688c51b0e596d4d463fa8859256a#subdirectory=engine",
 ]
 
 [project.optional-dependencies]
-robot = ["reachy-mini"]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11", "websockets>=14"]
+# The Reachy Mini SDK, at the version of the robot's daemon. Release 1.9 brings the
+# face detector and the head wobbling driven by audio.
+robot = ["reachy-mini>=1.9"]
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "mypy>=1.8",
+    "ruff>=0.4",
+]
 
 [project.urls]
 Homepage = "https://openrois.org"
-Documentation = "https://openrois.org/docs/reference/components"
 Repository = "https://github.com/openrois/openrois-adapter-reachy-mini"
 Issues = "https://github.com/openrois/openrois-adapter-reachy-mini/issues"
 
-[project.scripts]
-openrois-adapter-reachy-mini = "openrois_adapter_reachy_mini.adapter:main"
-openrois-reachy-mini-up = "openrois_adapter_reachy_mini.bringup:main"
+[tool.hatch.metadata]
+allow-direct-references = true
 
-[build-system]
-requires = ["setuptools>=64"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-openrois_adapter_reachy_mini = ["py.typed", "openrois-profile.yaml"]
+# openrois and openrois.components are namespace packages shared with the other OpenRoIS
+# distributions, so this one ships only openrois/components/reachy_mini/, next to the
+# adapter process.
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrois", "src/openrois_adapter_reachy_mini"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.mypy]
-strict = true
 python_version = "3.12"
-
-[[tool.mypy.overrides]]
-module = ["openrois_components_core.*", "reachy_mini.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-# The adapter SDK decorators are typed as plain Callables, and an editable
-# install of the SDK hides its py.typed from mypy.
-module = "openrois_adapter_reachy_mini.components"
-disable_error_code = ["untyped-decorator", "no-any-return"]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+files = ["src", "tests"]
+mypy_path = "src"
+explicit_package_bases = true
