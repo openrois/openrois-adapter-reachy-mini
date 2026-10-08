@@ -1,8 +1,8 @@
 """SystemInformation for the Reachy Mini.
 
 ``robot_position`` reports where the robot faces: a Reachy Mini does not drive, so its
-position is 0, 0 and the yaw of its body. ``engine_status`` reports READY since the
-component connected.
+position is 0, 0 and the yaw of its body. ``engine_status`` reports READY while the
+robot's daemon answers, and ERROR while it does not.
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ class ReachyMiniSystemInformation(Component):
     @query("robot_position")
     async def robot_position(self) -> dict[str, object]:
         """``x,y,theta`` in meters and radians: 0, 0 and the yaw of the body."""
-        head_joints, _ = self._connection.mini.get_current_joint_positions()
+        mini = await self._connection.client()
+        head_joints, _ = mini.get_current_joint_positions()
         body_yaw = float(head_joints[0]) if head_joints else 0.0
         return {
             "position_data": [f"0.0000,0.0000,{body_yaw:.4f}"],
@@ -48,8 +49,11 @@ class ReachyMiniSystemInformation(Component):
 
     @query("engine_status")
     async def engine_status(self) -> dict[str, object]:
-        """READY since the component connected.
-
-        A component that could not connect answers no query, so READY is all it reports.
-        """
-        return {"operable_time": self._started, "status": ComponentStatus.READY}
+        """READY while the robot's daemon answers, ERROR while it does not."""
+        try:
+            await self._connection.client()
+        except ConnectionError:
+            status = ComponentStatus.ERROR
+        else:
+            status = ComponentStatus.READY
+        return {"operable_time": self._started, "status": status}

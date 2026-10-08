@@ -8,7 +8,8 @@ moves for it: the component reads camera frames, and leaves the daemon's head tr
 off.
 
 The simulator renders no camera image while it runs headless, and then the component
-reports nothing.
+reports nothing. Nor does it while the robot's daemon does not answer: the count resumes
+once the connection reaches the daemon again.
 """
 
 from __future__ import annotations
@@ -105,13 +106,22 @@ class ReachyMiniPersonDetection(Component):
     async def _watch(self) -> None:
         loop = asyncio.get_running_loop()
         debounce = Debounce(self._hold)
+        failing = False
         while True:
             started = loop.time()
+            count = None
             try:
-                count = await asyncio.to_thread(self.count)
+                mini = await self._connection.client()
+                count = await asyncio.to_thread(self.count, mini)
+            except ConnectionError:
+                pass  # The connection reports the daemon that does not answer.
             except Exception:
-                logger.exception("Could not count the faces in a camera frame")
-                count = None
+                # Once per run of failures, so a broken camera does not flood the log.
+                if not failing:
+                    logger.exception("Could not count the faces in a camera frame")
+                failing = True
+            else:
+                failing = False
             if count is not None:
                 reported = debounce.update(count, loop.time())
                 if reported is not None:
@@ -121,9 +131,9 @@ class ReachyMiniPersonDetection(Component):
                     self.emit("person_detected", number=reported, timestamp=datetime.now(UTC))
             await asyncio.sleep(max(0.0, self._interval - (loop.time() - started)))
 
-    def count(self) -> int | None:
+    def count(self, mini: Any) -> int | None:
         """The number of faces in the latest camera frame, or None without a frame."""
-        frame = self._connection.mini.media.get_frame()
+        frame = mini.media.get_frame()
         if frame is None:
             return None
         step = max(1, int(frame.shape[1]) // self._width)

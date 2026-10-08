@@ -73,9 +73,12 @@ ln -s "$(find "$HOME/.local/gst-plugins-rs" -name libgstrswebrtc.so)" ~/.local/s
 ## Run
 
 Start an [OpenRoIS gateway](https://github.com/openrois/openrois/tree/dev/gateway) first,
-on `ws://127.0.0.1:8765` by default. Then start one adapter per robot:
+on `ws://127.0.0.1:8765` by default. Then start one adapter per robot, in a terminal
+where the environment is active:
 
 ```bash
+source ~/venvs/openrois-reachy/bin/activate
+
 # The simulator on this machine.
 reachy-mini-daemon --sim
 openrois-adapter-reachy-mini --engine-id reachy_sim --sim
@@ -83,6 +86,12 @@ openrois-adapter-reachy-mini --engine-id reachy_sim --sim
 # The Reachy Mini Wireless on the network.
 openrois-adapter-reachy-mini --engine-id reachy_real --host reachy-mini.local
 ```
+
+The adapter reaches the robot at `--host` over the network, and the daemon on this
+machine with `--sim`, so the two never mix up when the simulator runs next to a real
+robot. When a daemon stops or drops off the network, the commands of its robot fail with
+ERROR, and the adapter connects again once the daemon is back. The adapter and the daemon
+start in any order.
 
 The simulator renders the camera only with its viewer open, so with `--headless`
 PersonDetection reports nothing. Under Wayland the MuJoCo viewer runs through XWayland:
@@ -125,7 +134,7 @@ Every flag falls back to an environment variable.
 | `--gateway-url` | `OPENROIS_GATEWAY_URL` | `ws://127.0.0.1:8765` | The gateway to connect to |
 | `--engine-id` | `OPENROIS_ENGINE_ID` | `reachy_mini` | The engine id, the first part of every ref |
 | `--host` | `OPENROIS_REACHY_HOST` | `reachy-mini.local` | The host of a robot on the network |
-| `--connection-mode` | `OPENROIS_REACHY_CONNECTION_MODE` | `auto` | `localhost_only`, `network`, or `auto` to try this machine first |
+| `--connection-mode` | `OPENROIS_REACHY_CONNECTION_MODE` | `network` | `network` for the daemon at `--host`, `localhost_only` for a daemon on this machine, or `auto` to try this machine first |
 | `--sim` | | | The simulator on this machine, `--connection-mode localhost_only` |
 | `--emotions` | `OPENROIS_REACHY_EMOTIONS` | off | Add Pollen's recorded emotions to the reactions, from the Hugging Face Hub |
 | `--piper` | `OPENROIS_PIPER` | `piper` | The command that runs Piper |

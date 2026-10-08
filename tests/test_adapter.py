@@ -42,6 +42,11 @@ def test_the_flags_fall_back_to_the_environment(monkeypatch: pytest.MonkeyPatch)
     assert isinstance(settings.synthesizer(), ToneSynthesizer)
 
 
+def test_a_host_is_reached_over_the_network() -> None:
+    settings, _ = parse_args(["--host", "192.168.1.20"])
+    assert settings.connection_mode == "network"
+
+
 def test_sim_is_the_simulator_on_this_machine() -> None:
     settings, _ = parse_args(["--sim", "--engine-id", "reachy_sim"])
     assert settings.connection_mode == "localhost_only"
@@ -177,6 +182,24 @@ async def test_the_simulator_speaks_while_it_reacts(gateway: str, sdk: FakeSdk) 
     sim = sdk.robot("localhost")
     assert len(sim.played) == 1 and sim.moves[0].finished
     assert sdk.robot("reachy-mini.local").moves == []
+
+
+async def test_the_wireless_moves_while_the_simulator_runs(gateway: str, sdk: FakeSdk) -> None:
+    async with connect(gateway) as connection:
+        client = Client(connection)
+        bound = await client.call("rois.command.bind", component_ref="reachy_real/reaction")
+        assert bound["return_code"] == "OK"
+        unit = {
+            "component_ref": "reachy_real/reaction",
+            "command_type": "start",
+            "command_id": "react",
+        }
+        executed = await client.call("rois.command.execute", command_unit_list=[unit])
+        assert executed["return_code"] == "OK"
+        done = await client.wait("rois.command.completed", {"command_id": "react"})
+        assert done["status"] == "OK"
+    assert sdk.robot("reachy-mini.local").moves[0].finished
+    assert sdk.robot("localhost").moves == []
 
 
 async def test_the_wireless_reports_a_person(gateway: str, sdk: FakeSdk) -> None:

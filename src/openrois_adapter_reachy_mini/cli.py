@@ -13,7 +13,9 @@ engine ids put two robots behind one gateway::
 
 The components are ``<engine id>/system_information``, ``<engine id>/reaction``,
 ``<engine id>/speech_synthesis`` and ``<engine id>/person_detection``. Without Piper
-voices, the robot speaks with a voice-like tone.
+voices, the robot speaks with a voice-like tone. The adapter reaches the daemon at
+``--host`` on the network, or the daemon on this machine with ``--sim``, and connects
+again whenever the daemon comes back.
 
 Every flag falls back to an environment variable: ``OPENROIS_GATEWAY_URL``,
 ``OPENROIS_ENGINE_ID``, ``OPENROIS_REACHY_HOST``, ``OPENROIS_REACHY_CONNECTION_MODE``,
@@ -48,7 +50,7 @@ from openrois.components.reachy_mini import (
 
 logger = logging.getLogger("openrois_adapter_reachy_mini")
 
-CONNECTION_MODES: tuple[ConnectionMode, ...] = ("auto", "localhost_only", "network")
+CONNECTION_MODES: tuple[ConnectionMode, ...] = ("network", "localhost_only", "auto")
 
 
 @dataclass(frozen=True)
@@ -58,9 +60,10 @@ class Settings:
     Attributes:
         gateway_url: The gateway to serve the engine to.
         engine_id: The engine id, the first part of every ref, for example ``reachy_sim``.
-        host: The host of the robot's daemon when it runs on another machine.
-        connection_mode: ``localhost_only`` for the simulator on this machine,
-            ``network`` for a robot on the network, ``auto`` to try this machine first.
+        host: The host of the robot's daemon on the network.
+        connection_mode: ``network`` for the daemon at ``host``, ``localhost_only`` for
+            the simulator or another daemon on this machine, ``auto`` to try this machine
+            first and ``host`` after.
         emotions: Whether Pollen's recorded emotions join the built-in reactions.
         piper: The command that runs Piper.
         piper_voices: The folder of the Piper voices. Without it the robot speaks with a
@@ -70,7 +73,7 @@ class Settings:
     gateway_url: str = "ws://127.0.0.1:8765"
     engine_id: str = "reachy_mini"
     host: str = "reachy-mini.local"
-    connection_mode: ConnectionMode = "auto"
+    connection_mode: ConnectionMode = "network"
     emotions: bool = False
     piper: str = "piper"
     piper_voices: Path | None = None
@@ -123,7 +126,10 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[Settings, str]:
         "--connection-mode",
         choices=CONNECTION_MODES,
         default=env.get("OPENROIS_REACHY_CONNECTION_MODE", defaults.connection_mode),
-        help="how to reach the daemon (env OPENROIS_REACHY_CONNECTION_MODE)",
+        help=(
+            "network for the daemon at --host, localhost_only for a daemon on this machine, "
+            "auto to try this machine first (env OPENROIS_REACHY_CONNECTION_MODE)"
+        ),
     )
     parser.add_argument(
         "--sim",

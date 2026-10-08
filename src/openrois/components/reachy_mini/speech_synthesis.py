@@ -126,7 +126,13 @@ class ReachyMiniSpeechSynthesis(Component):
             raise CommandFailed(CompletedStatus.ERROR, str(exc)) from exc
         seconds = await asyncio.to_thread(scale_wav, spoken, played, volume / _UNITY_VOLUME)
 
-        mini = self._connection.mini
+        try:
+            await self._speak(played, seconds, text)
+        except ConnectionError as exc:
+            raise CommandFailed(CompletedStatus.ERROR, f"No Reachy Mini daemon: {exc}") from exc
+
+    async def _speak(self, played: Path, seconds: float, text: str) -> None:
+        mini = await self._connection.client()
         logger.info("Speaking %.1f s: %s", seconds, text)
         if self._wobble:
             await asyncio.to_thread(mini.enable_wobbling)
@@ -142,7 +148,14 @@ class ReachyMiniSpeechSynthesis(Component):
 
     @invoke("stop")
     async def stop(self) -> None:
-        await asyncio.to_thread(self._connection.mini.media.stop_playing)
+        # Without a daemon nothing plays, and the engine aborts the start all the same.
+        mini = self._connection.current
+        if mini is None:
+            return
+        try:
+            await asyncio.to_thread(mini.media.stop_playing)
+        except Exception as exc:
+            logger.warning("Could not cut the voice off: %s", exc)
 
     def _text(self) -> str:
         """The text to speak: speech_text, or the plain text of ssml_text."""

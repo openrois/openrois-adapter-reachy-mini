@@ -88,6 +88,17 @@ async def test_stop_cuts_the_voice_off(host: Host, sdk: FakeSdk) -> None:
     assert not sdk.robot().wobbling
 
 
+async def test_without_the_daemon_the_start_fails_and_stop_still_works(
+    host: Host, sdk: FakeSdk
+) -> None:
+    robot = await speech(host)
+    await robot.set("speech_synthesis", speech_text="Hello")
+    sdk.stop_daemon()
+    assert await robot.run("speech_synthesis", "start") == "ERROR"
+    assert await robot.run("speech_synthesis", "stop") == "OK"
+    assert sdk.robot().played == []
+
+
 async def test_the_parameters_are_checked(host: Host, sdk: FakeSdk) -> None:
     robot = await speech(host)
     assert await robot.set("speech_synthesis", volume="150") == "ERROR"

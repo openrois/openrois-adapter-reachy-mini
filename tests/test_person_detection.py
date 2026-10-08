@@ -10,9 +10,9 @@ from tests._fakes import FakeSdk
 from tests.conftest import Host, Robot
 
 
-async def detection(host: Host, sdk: FakeSdk, faces: int | None) -> Robot:
+async def detection(host: Host, sdk: FakeSdk, faces: int | None, *, retry: float = 3.0) -> Robot:
     sdk.robot().show(faces)
-    connection = ReachyMiniConnection(connection_mode="localhost_only")
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=retry)
     component = ReachyMiniPersonDetection(connection, interval=0.01, hold=0.05, threshold=0.7)
     robot = await host({"person_detection": component})
     await robot.subscribe("person_detection", "person_detected")
@@ -72,6 +72,18 @@ async def test_without_frames_nothing_is_reported(host: Host, sdk: FakeSdk) -> N
     assert robot.events() == []
     status = await robot.query("person_detection", "component_status")
     assert status["status"] == "READY"
+
+
+async def test_the_count_resumes_when_the_daemon_comes_back(host: Host, sdk: FakeSdk) -> None:
+    robot = await detection(host, sdk, faces=1, retry=0.0)
+    await wait_for_events(robot, 1)
+    sdk.stop_daemon()
+    await asyncio.sleep(0.1)
+    sdk.robot().show(2)
+    sdk.start_daemon()
+    events = await wait_for_events(robot, 2)
+    assert events[1]["number"] == "2"
+    assert len(sdk.open_clients()) == 1
 
 
 async def test_the_detector_stops_with_the_engine(host: Host, sdk: FakeSdk) -> None:

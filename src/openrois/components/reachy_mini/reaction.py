@@ -112,12 +112,15 @@ class ReachyMiniReaction(Component):
         name = self.parameters.get("reaction_ref", DEFAULT_REACTION)
         if name not in self.reactions():
             raise CommandFailed(CompletedStatus.ERROR, f"No reaction is named {name!r}")
-        mini = self._connection.mini
-        logger.info("Playing the reaction %s", name)
-        # A stop, or a new start, cancels the playback here: the head stays where it is,
-        # and the start ends with ABORT. The engine serves stop for a component that
-        # handles start, so no stop handler is needed.
-        await mini.async_play_move(self._move(name, mini), sound=False)
+        try:
+            mini = await self._connection.client()
+            logger.info("Playing the reaction %s", name)
+            # A stop, or a new start, cancels the playback here: the head stays where it
+            # is, and the start ends with ABORT. The engine serves stop for a component
+            # that handles start, so no stop handler is needed.
+            await mini.async_play_move(self._move(name, mini), sound=False)
+        except ConnectionError as exc:
+            raise CommandFailed(CompletedStatus.ERROR, f"No Reachy Mini daemon: {exc}") from exc
 
     def _move(self, name: str, mini: Any) -> BlendedMove:
         from reachy_mini.utils import create_head_pose

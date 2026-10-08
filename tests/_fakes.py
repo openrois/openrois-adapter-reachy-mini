@@ -5,6 +5,10 @@ the simulator. A ``FakeRobot`` keeps what the components did to it: the moves pl
 whether with their sound, the head pose and the antennas, the sounds played, the stops,
 the wobbling, and the camera frames it serves. A frame whose first pixel is ``n`` shows
 ``n`` faces to the fake face detector.
+
+Every daemon runs until ``stop_daemon``. A client connects as the SDK does, ``auto``
+included, which tries this machine first, and a client whose daemon stopped fails its
+commands with the SDK's ``ConnectionError``.
 """
 
 from __future__ import annotations
@@ -110,15 +114,38 @@ class FakeRobot:
         return self.frames[0]
 
 
+LOST = "Lost connection with the server."
+
+
+@dataclass
+class FakeClient:
+    """The SDK's connection to one daemon."""
+
+    host: str
+    port: int
+    lost: bool = False
+
+    def is_connected(self) -> bool:
+        return not self.lost
+
+    def check(self) -> None:
+        if self.lost:
+            raise ConnectionError(LOST)
+
+
 class FakeMedia:
-    def __init__(self, robot: FakeRobot, backend: str) -> None:
+    def __init__(self, robot: FakeRobot, client: FakeClient, backend: str) -> None:
         self.robot = robot
+        self.client = client
         self.backend = backend
 
     def get_frame(self) -> np.ndarray | None:
+        if self.client.lost:
+            return None
         return self.robot.next_frame()
 
     def play_sound(self, sound_file: str) -> None:
+        self.client.check()
         with wave.open(sound_file, "rb") as audio:
             seconds = audio.getnframes() / float(audio.getframerate())
         self.robot.played.append((Path(sound_file).name, seconds))
@@ -160,6 +187,17 @@ class FakeSdk:
     library_fails: bool = False
     detector_thresholds: list[float] = field(default_factory=list)
     detected_shapes: list[tuple[int, ...]] = field(default_factory=list)
+    down: set[str] = field(default_factory=set)
+
+    def stop_daemon(self, host: str = "localhost") -> None:
+        """Stop the daemon of a robot: its clients lose it, and new ones cannot connect."""
+        self.down.add(host)
+        for client in self.clients:
+            if client.robot.host == host:
+                client.client.lost = True
+
+    def start_daemon(self, host: str = "localhost") -> None:
+        self.down.discard(host)
 
     def robot(self, host: str = "localhost") -> FakeRobot:
         if host not in self.robots:
@@ -183,7 +221,15 @@ class FakeSdk:
                 media_backend: str = "default",
                 **options: Any,
             ) -> None:
-                where = "localhost" if connection_mode == "localhost_only" else host
+                # As the SDK does: auto tries this machine first, then the host.
+                if connection_mode == "localhost_only" or (
+                    connection_mode == "auto" and "localhost" not in sdk.down
+                ):
+                    where = "localhost"
+                else:
+                    where = host
+                if where in sdk.down:
+                    raise ConnectionError(f"Failed to connect to ws://{where}:{port}/ws/sdk")
                 self.options = {
                     "host": host,
                     "port": port,
@@ -193,7 +239,9 @@ class FakeSdk:
                     **options,
                 }
                 self.robot = sdk.robot(where)
-                self.media = FakeMedia(self.robot, media_backend)
+                self.client = FakeClient(where, port)
+                self.connection_mode = "localhost_only" if where == "localhost" else "network"
+                self.media = FakeMedia(self.robot, self.client, media_backend)
                 self.closed = False
                 sdk.clients.append(self)
 
@@ -209,20 +257,25 @@ class FakeSdk:
                 )
 
             def set_target_head_pose(self, pose: np.ndarray) -> None:
+                self.client.check()
                 self.robot.head = np.array(pose)
                 self.robot.head_targets.append(self.robot.head)
 
             def set_target_antenna_joint_positions(self, antennas: list[float]) -> None:
+                self.client.check()
                 self.robot.antennas = list(antennas)
 
             def set_target_body_yaw(self, body_yaw: float) -> None:
+                self.client.check()
                 self.robot.body_yaw = body_yaw
 
             def enable_wobbling(self) -> None:
+                self.client.check()
                 self.robot.wobbling = True
                 self.robot.wobble_log.append(True)
 
             def disable_wobbling(self) -> None:
+                self.client.check()
                 self.robot.wobbling = False
                 self.robot.wobble_log.append(False)
 
@@ -233,6 +286,7 @@ class FakeSdk:
                 initial_goto_duration: float = 0.0,
                 sound: bool = True,
             ) -> None:
+                self.client.check()
                 played = PlayedMove(move, sound)
                 self.robot.moves.append(played)
                 steps = max(4, int(move.duration * 20))
