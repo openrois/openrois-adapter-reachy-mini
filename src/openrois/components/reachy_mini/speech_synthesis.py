@@ -68,21 +68,19 @@ class ReachyMiniSpeechSynthesis(Component):
         wobble: bool = True,
         tail: float = 0.3,
     ) -> None:
-        self._connection = connection
+        self._connection = self.uses(connection)
         self._synthesizer: Synthesizer = synthesizer or ToneSynthesizer()
         self._wobble = wobble
         self._tail = tail
         self._folder: Path | None = None
 
     async def connect(self) -> None:
-        await self._connection.open()
         self._folder = Path(tempfile.mkdtemp(prefix="openrois-speech-"))
 
     async def disconnect(self) -> None:
         if self._folder is not None:
             shutil.rmtree(self._folder, ignore_errors=True)
             self._folder = None
-        await self._connection.close()
 
     @query("synthesizable_languages")
     async def synthesizable_languages(self) -> dict[str, object]:

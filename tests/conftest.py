@@ -1,4 +1,4 @@
-"""The fake SDK, and an engine that hosts Reachy Mini components with a session of it."""
+"""The fake SDK, and an engine that hosts Reachy Mini components with a client of it."""
 
 from __future__ import annotations
 
@@ -26,13 +26,12 @@ def sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSdk:
 
 @dataclass
 class Robot:
-    """A started engine with Reachy Mini components, and a trusted session of it."""
+    """A started engine with Reachy Mini components, and a connected client that bound them."""
 
     engine: Engine
     refs: dict[str, str]
     notifications: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     session: Session | None = None
-    _ids: int = 0
 
     async def call(self, method: str, **params: Any) -> dict[str, Any]:
         assert self.session is not None
@@ -55,16 +54,12 @@ class Robot:
                 await asyncio.sleep(0.005)
 
     async def execute(self, name: str, command_type: str) -> str:
-        """Run a command on a component, and return its command id at once."""
-        self._ids += 1
-        command_id = f"c{self._ids}"
-        unit = {
-            "component_ref": self.refs[name],
-            "command_type": command_type,
-            "command_id": command_id,
-        }
+        """Run a command on a component, and return the command id the engine assigned."""
+        unit = {"component_ref": self.refs[name], "command_type": command_type}
         result = await self.call("rois.command.execute", command_unit_list=[unit])
         assert result["return_code"] == "OK", result
+        [assigned] = result["command_unit_list"]
+        command_id: str = assigned["command_id"]
         return command_id
 
     async def run(self, name: str, command_type: str) -> str:
@@ -92,6 +87,14 @@ class Robot:
         result = await self.call("rois.event.subscribe", event_type=event_type, condition=condition)
         assert result["return_code"] == "OK", result
 
+    async def bind(self, name: str) -> None:
+        result = await self.call("rois.command.bind", component_ref=self.refs[name])
+        assert result["return_code"] == "OK", result
+
+    async def status(self, name: str) -> str:
+        """What component_status reports for a component."""
+        return (await self.query(name, "component_status"))["status"]
+
     def events(self) -> list[dict[str, str]]:
         """The results of every event sent so far, by name."""
         return [
@@ -108,7 +111,9 @@ async def host() -> AsyncIterator[Host]:
     """Host components in a started engine. The engines stop after the test."""
     engines: list[Engine] = []
 
-    async def start(components: Mapping[str, Component], engine_id: str = "reachy") -> Robot:
+    async def start(
+        components: Mapping[str, Component], engine_id: str = "reachy", *, bind: bool = True
+    ) -> Robot:
         engine = Engine(engine_id)
         refs = {name: engine.add_component(name, c) for name, c in components.items()}
         await engine.start()
@@ -118,7 +123,13 @@ async def host() -> AsyncIterator[Host]:
         def notify(method: str, params: BaseModel) -> None:
             robot.notifications.append((method, params.model_dump(mode="json")))
 
-        robot.session = engine.open_session(notify, trusted=True)
+        # A service application: it connects, then binds each component it commands.
+        robot.session = engine.open_session(notify)
+        connected = await robot.call("rois.system.connect")
+        assert connected["return_code"] == "OK", connected
+        if bind:
+            for name in refs:
+                await robot.bind(name)
         return robot
 
     yield start

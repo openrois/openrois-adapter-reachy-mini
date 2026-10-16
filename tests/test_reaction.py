@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from openrois.components.reachy_mini import (
     EMOTIONS_LIBRARY,
     EXPRESSIONS,
@@ -20,9 +22,9 @@ async def reaction(host: Host, library: str | None = None) -> Robot:
     return await host({"reaction": ReachyMiniReaction(connection, library=library)})
 
 
-def test_serves_start_stop_and_available_reactions() -> None:
+def test_serves_the_common_commands_and_available_reactions() -> None:
     profile = ReachyMiniReaction.rois_profile()
-    assert [c.name for c in profile.command_profiles] == ["start", "stop"]
+    assert [c.name for c in profile.command_profiles] == ["start", "stop", "suspend", "resume"]
     assert [q.name for q in profile.query_profiles] == ["component_status", "available_reactions"]
     assert profile.function == "actuation"
     [reaction_ref] = profile.parameter_profiles
@@ -104,3 +106,13 @@ async def test_without_the_library_the_expressions_remain(host: Host, sdk: FakeS
     values = await robot.query("reaction", "available_reactions")
     assert json.loads(values["available_reactions"]) == list(EXPRESSIONS)
     assert await robot.run("reaction", "start") == "OK"
+
+
+async def test_time_scale_plays_the_reactions_faster(host: Host, sdk: FakeSdk) -> None:
+    connection = ReachyMiniConnection(connection_mode="localhost_only")
+    component = ReachyMiniReaction(connection, blend=0.4, time_scale=0.5)
+    robot = await host({"reaction": component})
+    assert await robot.run("reaction", "start") == "OK"
+    [played] = sdk.robot().moves
+    assert played.move.duration == pytest.approx(0.5 * (0.4 + EXPRESSIONS["nod"][-1].at))
+    assert max(pitch_of(p) for p in sdk.robot().head_targets) > 10.0

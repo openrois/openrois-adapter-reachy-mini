@@ -32,9 +32,9 @@ async def speech(host: Host, synthesizer: Synthesizer = FAST_TONE, *, wobble: bo
     return await host({"speech_synthesis": component})
 
 
-def test_serves_start_stop_and_both_queries() -> None:
+def test_serves_the_common_commands_and_both_queries() -> None:
     profile = ReachyMiniSpeechSynthesis.rois_profile()
-    assert [c.name for c in profile.command_profiles] == ["start", "stop"]
+    assert [c.name for c in profile.command_profiles] == ["start", "stop", "suspend", "resume"]
     assert [q.name for q in profile.query_profiles] == [
         "component_status",
         "synthesizable_languages",
@@ -80,7 +80,9 @@ async def test_stop_cuts_the_voice_off(host: Host, sdk: FakeSdk) -> None:
     robot = await speech(host, ToneSynthesizer(seconds_per_character=0.5))
     await robot.set("speech_synthesis", speech_text="A long sentence to cut off.")
     start = await robot.execute("speech_synthesis", "start")
-    await asyncio.sleep(0.3)
+    async with asyncio.timeout(5.0):
+        while not sdk.robot().played:  # The tone takes a moment to write.
+            await asyncio.sleep(0.01)
     assert await robot.run("speech_synthesis", "stop") == "OK"
     assert await robot.completed(start) == "ABORT"
     assert sdk.robot().log == ["play", "stop_playing"]
@@ -88,14 +90,16 @@ async def test_stop_cuts_the_voice_off(host: Host, sdk: FakeSdk) -> None:
     assert not sdk.robot().wobbling
 
 
-async def test_without_the_daemon_the_start_fails_and_stop_still_works(
+async def test_without_the_daemon_the_start_fails_and_the_component_reports_error(
     host: Host, sdk: FakeSdk
 ) -> None:
     robot = await speech(host)
     await robot.set("speech_synthesis", speech_text="Hello")
     sdk.stop_daemon()
     assert await robot.run("speech_synthesis", "start") == "ERROR"
-    assert await robot.run("speech_synthesis", "stop") == "OK"
+    assert await robot.status("speech_synthesis") == "ERROR"
+    # Nothing plays, so the engine refuses the stop as any command while ERROR holds.
+    assert await robot.run("speech_synthesis", "stop") == "ERROR"
     assert sdk.robot().played == []
 
 

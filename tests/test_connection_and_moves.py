@@ -19,7 +19,7 @@ from openrois.components.reachy_mini import (
 )
 from openrois.components.reachy_mini.moves import REST_ANTENNAS, BlendedMove, KeyframeMove
 from tests._fakes import FakeSdk, create_head_pose, linear_pose_interpolation, pitch_of
-from tests.conftest import Host
+from tests.conftest import Host, Robot
 
 
 def four(connection: ReachyMiniConnection) -> dict[str, object]:
@@ -61,18 +61,22 @@ async def test_auto_tries_this_machine_first_as_the_sdk_does(host: Host, sdk: Fa
     assert [c.robot.host for c in sdk.clients] == ["localhost", "reachy-mini.local"]
 
 
+async def ready(robot: Robot, name: str) -> None:
+    """Wait until the watchdog reached the daemon and cleared the error of a component."""
+    async with asyncio.timeout(2.0):
+        while await robot.status(name) != "READY":
+            await asyncio.sleep(0.01)
+
+
 async def test_a_daemon_that_comes_back_is_reached_again(host: Host, sdk: FakeSdk) -> None:
-    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.0)
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
     robot = await host(four(connection))
     assert await robot.run("reaction", "start") == "OK"
     sdk.stop_daemon()
     assert await robot.run("reaction", "start") == "ERROR"
-    status = await robot.query("system_information", "engine_status")
-    assert status["status"] == "ERROR"
     sdk.start_daemon()
+    await ready(robot, "reaction")
     assert await robot.run("reaction", "start") == "OK"
-    status = await robot.query("system_information", "engine_status")
-    assert status["status"] == "READY"
     # The client of the stopped daemon is disconnected in the background.
     async with asyncio.timeout(1.0):
         while not sdk.clients[0].closed:
@@ -82,22 +86,14 @@ async def test_a_daemon_that_comes_back_is_reached_again(host: Host, sdk: FakeSd
 
 async def test_the_adapter_starts_before_the_daemon(host: Host, sdk: FakeSdk) -> None:
     sdk.stop_daemon()
-    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.0)
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
     robot = await host(four(connection))
     assert connection.is_open
+    assert await robot.status("reaction") == "ERROR"
     assert await robot.run("reaction", "start") == "ERROR"
     sdk.start_daemon()
+    await ready(robot, "reaction")
     assert await robot.run("reaction", "start") == "OK"
-
-
-async def test_the_daemon_is_tried_once_every_retry(host: Host, sdk: FakeSdk) -> None:
-    sdk.stop_daemon()
-    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=60.0)
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
-    sdk.start_daemon()
-    # The attempt of the connect failed less than a minute ago, so the start fails at once.
-    assert await robot.run("reaction", "start") == "ERROR"
-    assert sdk.clients == []
 
 
 async def test_without_the_sdk_the_components_are_in_error(

@@ -25,9 +25,9 @@ classifiers = [
 # The OpenRoIS packages come from the openrois repository, pinned to a dev commit,
 # until their first release, which the adapter joins.
 dependencies = [
-    "openrois-interfaces @ git+https://github.com/openrois/openrois@7e9c3dc8af8c688c51b0e596d4d463fa8859256a#subdirectory=interfaces/python",
-    "openrois-components-core @ git+https://github.com/openrois/openrois@7e9c3dc8af8c688c51b0e596d4d463fa8859256a#subdirectory=components/core",
-    "openrois-engine @ git+https://github.com/openrois/openrois@7e9c3dc8af8c688c51b0e596d4d463fa8859256a#subdirectory=engine",
+    "openrois-interfaces @ git+https://github.com/openrois/openrois@082c7bb81deefa31a4269f8e08ba790ca8bcb7f7#subdirectory=interfaces/python",
+    "openrois-components-core @ git+https://github.com/openrois/openrois@082c7bb81deefa31a4269f8e08ba790ca8bcb7f7#subdirectory=components/core",
+    "openrois-engine @ git+https://github.com/openrois/openrois@082c7bb81deefa31a4269f8e08ba790ca8bcb7f7#subdirectory=engine",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +40,7 @@ dev = [
     "pytest-asyncio>=1.0",
     "mypy>=1.8",
     "ruff>=0.4",
+    "openrois-gateway @ git+https://github.com/openrois/openrois@082c7bb81deefa31a4269f8e08ba790ca8bcb7f7#subdirectory=gateway",
 ]
 
 [project.urls]

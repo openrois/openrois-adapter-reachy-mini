@@ -1,0 +1,12 @@
+# Settings of the Reachy Mini adapter for Pollen's simulator on this machine, started with
+# reachy-mini-daemon --sim. Select it with --config adapter.sim.yaml.
+
+gateway_url: ws://127.0.0.1:8765
+engine_id: reachy_sim
+log_level: info
+
+simulator: true
+time_scale: 1.0
+
+reaction:
+  emotions: false

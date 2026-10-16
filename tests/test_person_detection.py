@@ -1,4 +1,4 @@
-"""PersonDetection: the number of faces in view, reported once it holds."""
+"""PersonDetection: the number of faces in view, reported once it holds, from start to stop."""
 
 from __future__ import annotations
 
@@ -10,12 +10,16 @@ from tests._fakes import FakeSdk
 from tests.conftest import Host, Robot
 
 
-async def detection(host: Host, sdk: FakeSdk, faces: int | None, *, retry: float = 3.0) -> Robot:
+async def detection(
+    host: Host, sdk: FakeSdk, faces: int | None, *, retry: float = 3.0, start: bool = True
+) -> Robot:
     sdk.robot().show(faces)
     connection = ReachyMiniConnection(connection_mode="localhost_only", retry=retry)
     component = ReachyMiniPersonDetection(connection, interval=0.01, hold=0.05, threshold=0.7)
     robot = await host({"person_detection": component})
     await robot.subscribe("person_detection", "person_detected")
+    if start:
+        assert await robot.run("person_detection", "start") == "OK"
     return robot
 
 
@@ -26,9 +30,10 @@ async def wait_for_events(robot: Robot, count: int) -> list[dict[str, str]]:
     return robot.events()
 
 
-def test_serves_person_detected_only() -> None:
+def test_serves_the_four_common_commands_component_status_and_person_detected() -> None:
     profile = ReachyMiniPersonDetection.rois_profile()
-    assert profile.command_profiles == []
+    assert [c.name for c in profile.command_profiles] == ["start", "stop", "suspend", "resume"]
+    assert [q.name for q in profile.query_profiles] == ["component_status"]
     assert [e.name for e in profile.event_profiles] == ["person_detected"]
     assert profile.function == "sensing"
 
@@ -75,7 +80,7 @@ async def test_without_frames_nothing_is_reported(host: Host, sdk: FakeSdk) -> N
 
 
 async def test_the_count_resumes_when_the_daemon_comes_back(host: Host, sdk: FakeSdk) -> None:
-    robot = await detection(host, sdk, faces=1, retry=0.0)
+    robot = await detection(host, sdk, faces=1, retry=0.01)
     await wait_for_events(robot, 1)
     sdk.stop_daemon()
     await asyncio.sleep(0.1)
@@ -94,3 +99,83 @@ async def test_the_detector_stops_with_the_engine(host: Host, sdk: FakeSdk) -> N
     await asyncio.sleep(0.1)
     assert len(sdk.detected_shapes) == shapes
     assert sdk.open_clients() == []
+
+
+async def test_nothing_is_detected_before_start(host: Host, sdk: FakeSdk) -> None:
+    robot = await detection(host, sdk, faces=1, start=False)
+    await asyncio.sleep(0.2)
+    assert robot.events() == []
+    assert sdk.detected_shapes == []
+    assert await robot.run("person_detection", "start") == "OK"
+    [event] = await wait_for_events(robot, 1)
+    assert event["number"] == "1"
+
+
+async def test_a_start_while_running_reports_the_current_count_once(
+    host: Host, sdk: FakeSdk
+) -> None:
+    robot = await detection(host, sdk, faces=1)
+    await wait_for_events(robot, 1)
+    sdk.robot().show(2)
+    events = await wait_for_events(robot, 2)
+    assert await robot.run("person_detection", "start") == "OK"
+    events = await wait_for_events(robot, 3)
+    assert [e["number"] for e in events] == ["1", "2", "2"]
+    await asyncio.sleep(0.2)
+    assert len(robot.events()) == 3
+
+
+async def test_a_start_before_the_first_count_reports_it_once(host: Host, sdk: FakeSdk) -> None:
+    robot = await detection(host, sdk, faces=None)
+    assert await robot.run("person_detection", "start") == "OK"
+    sdk.robot().show(1)
+    [event] = await wait_for_events(robot, 1)
+    assert event["number"] == "1"
+    await asyncio.sleep(0.2)
+    assert len(robot.events()) == 1
+
+
+async def test_stop_ends_detection_and_a_new_start_reports_again(host: Host, sdk: FakeSdk) -> None:
+    robot = await detection(host, sdk, faces=1)
+    await wait_for_events(robot, 1)
+    assert await robot.run("person_detection", "stop") == "OK"
+    shapes = len(sdk.detected_shapes)
+    await asyncio.sleep(0.1)
+    assert len(sdk.detected_shapes) == shapes
+    # The count starts from scratch, so the same count is reported again.
+    assert await robot.run("person_detection", "start") == "OK"
+    events = await wait_for_events(robot, 2)
+    assert events[1]["number"] == "1"
+
+
+async def test_suspend_holds_the_events_and_resume_reports_a_change(
+    host: Host, sdk: FakeSdk
+) -> None:
+    robot = await detection(host, sdk, faces=1)
+    await wait_for_events(robot, 1)
+    assert await robot.run("person_detection", "suspend") == "OK"
+    sdk.robot().show(3)
+    await asyncio.sleep(0.2)
+    assert len(robot.events()) == 1
+    assert await robot.run("person_detection", "resume") == "OK"
+    events = await wait_for_events(robot, 2)
+    assert events[1]["number"] == "3"
+
+
+async def test_resume_without_a_change_reports_nothing(host: Host, sdk: FakeSdk) -> None:
+    robot = await detection(host, sdk, faces=1)
+    await wait_for_events(robot, 1)
+    assert await robot.run("person_detection", "suspend") == "OK"
+    await asyncio.sleep(0.1)
+    assert await robot.run("person_detection", "resume") == "OK"
+    await asyncio.sleep(0.2)
+    assert len(robot.events()) == 1
+
+
+async def test_suspend_and_resume_before_start_do_nothing(host: Host, sdk: FakeSdk) -> None:
+    robot = await detection(host, sdk, faces=1, start=False)
+    assert await robot.run("person_detection", "suspend") == "OK"
+    assert await robot.run("person_detection", "resume") == "OK"
+    await asyncio.sleep(0.1)
+    assert robot.events() == []
+    assert sdk.detected_shapes == []

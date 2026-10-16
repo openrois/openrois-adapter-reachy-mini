@@ -1,8 +1,10 @@
 """SystemInformation for the Reachy Mini.
 
 ``robot_position`` reports where the robot faces: a Reachy Mini does not drive, so its
-position is 0, 0 and the yaw of its body. ``engine_status`` reports READY while the
-robot's daemon answers, and ERROR while it does not.
+position is 0, 0 and the yaw of its body. ``engine_status`` reports the status of the
+engine that hosts the component. While the robot's daemon does not answer, the
+connection raises ERROR on this component as on the others, and the engine refuses its
+queries.
 """
 
 from __future__ import annotations
@@ -10,7 +12,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from openrois.components.core import Component, component, query
-from openrois.interfaces.common import ComponentStatus
 from openrois.interfaces.components import SYSTEM_INFORMATION_PROFILE
 
 from openrois.components.reachy_mini.connection import ReachyMiniConnection
@@ -25,15 +26,11 @@ class ReachyMiniSystemInformation(Component):
     """
 
     def __init__(self, connection: ReachyMiniConnection) -> None:
-        self._connection = connection
+        self._connection = self.uses(connection)
         self._started = datetime.now(UTC)
 
     async def connect(self) -> None:
-        await self._connection.open()
         self._started = datetime.now(UTC)
-
-    async def disconnect(self) -> None:
-        await self._connection.close()
 
     @query("robot_position")
     async def robot_position(self) -> dict[str, object]:
@@ -49,11 +46,5 @@ class ReachyMiniSystemInformation(Component):
 
     @query("engine_status")
     async def engine_status(self) -> dict[str, object]:
-        """READY while the robot's daemon answers, ERROR while it does not."""
-        try:
-            await self._connection.client()
-        except ConnectionError:
-            status = ComponentStatus.ERROR
-        else:
-            status = ComponentStatus.READY
-        return {"operable_time": self._started, "status": status}
+        """The status of the engine, and when the component connected."""
+        return {"operable_time": self._started, "status": self.engine_state()}

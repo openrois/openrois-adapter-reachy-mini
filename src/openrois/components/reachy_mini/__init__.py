@@ -19,8 +19,6 @@ The components of one robot share one ``ReachyMiniConnection``::
     engine.add_component("speech_synthesis", ReachyMiniSpeechSynthesis(connection))
 
 The components import the SDK when they connect, so this package imports without it.
-They move to the openrois repository as ``openrois-components-reachy-mini`` once the
-adapter has run the full workflow, under the same import path.
 """
 
 from openrois.components.reachy_mini.connection import ConnectionMode, ReachyMiniConnection

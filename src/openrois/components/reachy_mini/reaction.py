@@ -27,7 +27,13 @@ from openrois.interfaces.components import REACTION_PROFILE
 from openrois.interfaces.service import CompletedStatus
 
 from openrois.components.reachy_mini.connection import ReachyMiniConnection
-from openrois.components.reachy_mini.moves import EXPRESSIONS, BlendedMove, Keyframe, KeyframeMove
+from openrois.components.reachy_mini.moves import (
+    EXPRESSIONS,
+    BlendedMove,
+    Keyframe,
+    KeyframeMove,
+    ScaledMove,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +68,8 @@ class ReachyMiniReaction(Component):
             component offers the built-in expressions only.
         blend: How long a reaction takes to ease from the current pose into its first
             pose, in seconds.
+        time_scale: The factor on the duration of every reaction and its blend: below 1
+            plays them faster, for tests, and above 1 slower.
     """
 
     def __init__(
@@ -70,14 +78,17 @@ class ReachyMiniReaction(Component):
         *,
         library: str | None = None,
         blend: float = 0.3,
+        time_scale: float = 1.0,
     ) -> None:
-        self._connection = connection
+        if time_scale <= 0:
+            raise ValueError(f"time_scale is above 0, not {time_scale}")
+        self._connection = self.uses(connection)
         self._library = library
         self._blend = blend
+        self.time_scale = time_scale
         self._recorded: Any = None
 
     async def connect(self) -> None:
-        await self._connection.open()
         if self._library is not None:
             try:
                 self._recorded = await asyncio.to_thread(_load_library, self._library)
@@ -86,9 +97,6 @@ class ReachyMiniReaction(Component):
                     "Could not load %s, so only the built-in expressions are offered",
                     self._library,
                 )
-
-    async def disconnect(self) -> None:
-        await self._connection.close()
 
     def reactions(self) -> list[str]:
         """Every reaction this component plays: the expressions, then the library."""
@@ -135,13 +143,15 @@ class ReachyMiniReaction(Component):
             move: Any = KeyframeMove(EXPRESSIONS[name], head_pose)
         else:
             move = self._recorded.get(name)
+        if self.time_scale != 1.0:
+            move = ScaledMove(move, self.time_scale)
         head_joints, antennas = mini.get_current_joint_positions()
         return BlendedMove(
             move,
             head=mini.get_current_head_pose(),
             antennas=(float(antennas[0]), float(antennas[1])),
             body_yaw=float(head_joints[0]),
-            blend=self._blend,
+            blend=self._blend * self.time_scale,
             interpolate=linear_pose_interpolation,
         )
 

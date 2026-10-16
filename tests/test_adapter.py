@@ -3,69 +3,138 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-from openrois.engine import Engine, WsClient, WsServer
-from websockets.asyncio.client import ClientConnection, connect
+from openrois.engine import WsClient
+from openrois.engine.config import ConfigError
+from openrois.gateway.app import Gateway
+from openrois.gateway.config import GatewayConfig
+from websockets.asyncio.client import connect
 
 from openrois.components.reachy_mini import (
     PiperSynthesizer,
+    ReachyMiniConnection,
     ReachyMiniPersonDetection,
     ReachyMiniReaction,
     ReachyMiniSpeechSynthesis,
     ReachyMiniSystemInformation,
     ToneSynthesizer,
 )
-from openrois_adapter_reachy_mini import Settings, build_engine
-from openrois_adapter_reachy_mini.cli import parse_args
+from openrois_adapter_reachy_mini import ReachyMiniConfig, build_engine
+from openrois_adapter_reachy_mini.cli import load_config
+from openrois_adapter_reachy_mini.workflow import Client, run_workflow
 from tests._fakes import FakeSdk
 
 COMPONENTS = ["person_detection", "reaction", "speech_synthesis", "system_information"]
 
 
-def test_the_flags_fall_back_to_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENROIS_ENGINE_ID", "reachy_real")
-    monkeypatch.setenv("OPENROIS_REACHY_HOST", "192.168.1.20")
-    monkeypatch.setenv("OPENROIS_REACHY_EMOTIONS", "1")
-    settings, level = parse_args(["--connection-mode", "network"])
-    assert settings == Settings(
-        engine_id="reachy_real",
-        host="192.168.1.20",
-        connection_mode="network",
-        emotions=True,
+def load(tmp_path: Path, yaml_text: str | None = None, *argv: str, **env: str) -> ReachyMiniConfig:
+    args = list(argv)
+    if yaml_text is not None:
+        path = tmp_path / "adapter.yaml"
+        path.write_text(yaml_text)
+        args = ["--config", str(path), *args]
+    return load_config(args, env)
+
+
+def test_the_defaults_reach_the_wireless_on_the_network(tmp_path: Path) -> None:
+    config = load(tmp_path)
+    assert config.engine_id == "reachy_mini"
+    assert config.robot_address == "reachy-mini.local"
+    assert not config.simulator
+    assert config.connection_mode() == "network"
+    assert config.time_scale == 1.0
+    assert isinstance(config.synthesizer(), ToneSynthesizer)
+
+
+def test_adapter_yaml_sets_the_robot_and_its_components(tmp_path: Path) -> None:
+    config = load(
+        tmp_path,
+        "engine_id: reachy_sim\n"
+        "simulator: true\n"
+        "time_scale: 0.5\n"
+        "connection:\n  retry: 1.5\n"
+        "reaction:\n  emotions: true\n"
+        "person_detection:\n  threshold: 0.8\n",
     )
-    assert level == "info"
-    assert isinstance(settings.synthesizer(), ToneSynthesizer)
+    assert config.engine_id == "reachy_sim"
+    assert config.connection_mode() == "localhost_only"
+    assert config.connection.retry == 1.5
+    assert config.reaction.emotions
+    assert config.person_detection.threshold == 0.8
+    assert config.time_scale == 0.5
 
 
-def test_a_host_is_reached_over_the_network() -> None:
-    settings, _ = parse_args(["--host", "192.168.1.20"])
-    assert settings.connection_mode == "network"
+def test_the_environment_and_the_flags_set_the_four_common_settings(tmp_path: Path) -> None:
+    config = load(
+        tmp_path,
+        "engine_id: from_file\nrobot_address: 10.0.0.1\n",
+        "--engine-id",
+        "reachy_real",
+        OPENROIS_ADAPTER_ENGINE_ID="from_env",
+        OPENROIS_ADAPTER_ROBOT_ADDRESS="192.168.1.20",
+        OPENROIS_ADAPTER_GATEWAY_URL="ws://gateway:8765",
+    )
+    assert config.engine_id == "reachy_real"  # The flag wins over the environment.
+    assert config.robot_address == "192.168.1.20"  # The environment wins over the file.
+    assert config.gateway_url == "ws://gateway:8765"
 
 
-def test_sim_is_the_simulator_on_this_machine() -> None:
-    settings, _ = parse_args(["--sim", "--engine-id", "reachy_sim"])
-    assert settings.connection_mode == "localhost_only"
-    assert settings.engine_id == "reachy_sim"
+def test_the_simulator_is_only_a_setting_of_the_file(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        load(tmp_path, None, "--sim")
+
+
+def test_an_unknown_setting_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="reaction.dance"):
+        load(tmp_path, "reaction:\n  dance: true\n")
+    with pytest.raises(ConfigError, match="time_scale"):
+        load(tmp_path, "time_scale: 0\n")
 
 
 def test_piper_voices_choose_piper(tmp_path: Path) -> None:
     (tmp_path / "en_US-lessac-medium.onnx").write_bytes(b"")
-    settings, _ = parse_args(["--piper-voices", str(tmp_path), "--piper", "/opt/piper/bin/piper"])
-    assert isinstance(settings.synthesizer(), PiperSynthesizer)
+    config = load(
+        tmp_path,
+        f"speech_synthesis:\n  piper: /opt/piper/bin/piper\n  piper_voices: {tmp_path}\n",
+    )
+    assert isinstance(config.synthesizer(), PiperSynthesizer)
 
 
 def test_an_empty_voices_folder_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit):
-        parse_args(["--piper-voices", str(tmp_path)])
+    empty = tmp_path / "voices"
+    empty.mkdir()
+    with pytest.raises(ConfigError, match="Piper"):
+        load(tmp_path, f"speech_synthesis:\n  piper_voices: {empty}\n")
+
+
+def test_the_shipped_adapter_files_load() -> None:
+    root = Path(__file__).parent.parent
+    wireless = load_config(["--config", str(root / "adapter.yaml")], {})
+    sim = load_config(["--config", str(root / "adapter.sim.yaml")], {})
+    assert (wireless.engine_id, wireless.connection_mode()) == ("reachy_real", "network")
+    assert (sim.engine_id, sim.connection_mode()) == ("reachy_sim", "localhost_only")
+
+
+def test_time_scale_scales_every_duration_the_adapter_times() -> None:
+    engine = build_engine(ReachyMiniConfig(engine_id="fast", time_scale=0.5))
+    system, reaction, speech, detection = engine.local_components()
+    [connection] = system.rois_resources()
+    assert isinstance(connection, ReachyMiniConnection)
+    assert connection.retry == pytest.approx(1.5)
+    assert isinstance(speech, ReachyMiniSpeechSynthesis)
+    assert speech._tail == pytest.approx(0.15)
+    assert isinstance(detection, ReachyMiniPersonDetection)
+    assert (detection._interval, detection._hold) == pytest.approx((0.1, 0.25))
+    assert isinstance(reaction, ReachyMiniReaction)
+    assert reaction.time_scale == 0.5
 
 
 def test_build_engine_hosts_the_four_components_on_one_connection() -> None:
-    engine = build_engine(Settings(engine_id="reachy_sim", connection_mode="localhost_only"))
+    engine = build_engine(ReachyMiniConfig(engine_id="reachy_sim", simulator=True))
     components = engine.local_components()
     assert [type(c) for c in components] == [
         ReachyMiniSystemInformation,
@@ -73,59 +142,24 @@ def test_build_engine_hosts_the_four_components_on_one_connection() -> None:
         ReachyMiniSpeechSynthesis,
         ReachyMiniPersonDetection,
     ]
-    connections = {id(c._connection) for c in components}  # type: ignore[attr-defined]
-    assert len(connections) == 1
-
-
-class Client:
-    """A RoIS client over JSON-RPC, as the HRI client talks to a gateway."""
-
-    def __init__(self, connection: ClientConnection) -> None:
-        self._connection = connection
-        self._ids = 0
-        self.notifications: list[tuple[str, dict[str, Any]]] = []
-
-    async def call(self, method: str, **params: Any) -> dict[str, Any]:
-        self._ids += 1
-        request = {"jsonrpc": "2.0", "id": self._ids, "method": method, "params": params}
-        await self._connection.send(json.dumps(request))
-        while True:
-            message: dict[str, Any] = json.loads(await self._connection.recv())
-            if message.get("id") == self._ids:
-                assert "result" in message, message
-                result: dict[str, Any] = message["result"]
-                return result
-            self.notifications.append((message["method"], message["params"]))
-
-    async def wait(
-        self, method: str, match: dict[str, Any], timeout: float = 5.0
-    ) -> dict[str, Any]:
-        """Wait for a notification whose params contain ``match``."""
-        async with asyncio.timeout(timeout):
-            while True:
-                for name, params in self.notifications:
-                    if name == method and match.items() <= params.items():
-                        return params
-                message = json.loads(await self._connection.recv())
-                if "method" in message:
-                    self.notifications.append((message["method"], message["params"]))
+    resources = {id(r) for c in components for r in c.rois_resources()}
+    assert len(resources) == 1
 
 
 @pytest.fixture
 async def gateway(sdk: FakeSdk) -> AsyncIterator[str]:
-    """A gateway with the simulator and the Wireless behind it, as two adapters."""
-    engine = Engine("lab")
-    server = WsServer(engine, child_timeout=1.0)
-    await server.start(port=0)
+    """An openrois-gateway with the simulator and the Wireless behind it, as two adapters."""
+    server = Gateway(GatewayConfig(engine_id="lab", port=0, child_timeout=1.0))
+    await server.start()
     url = f"ws://127.0.0.1:{server.port}"
     robots = [
-        Settings(gateway_url=url, engine_id="reachy_sim", connection_mode="localhost_only"),
-        Settings(gateway_url=url, engine_id="reachy_real", host="reachy-mini.local"),
+        ReachyMiniConfig(gateway_url=url, engine_id="reachy_sim", simulator=True),
+        ReachyMiniConfig(gateway_url=url, engine_id="reachy_real"),
     ]
     adapters = [asyncio.create_task(WsClient(build_engine(s), url).run_async()) for s in robots]
     try:
         async with asyncio.timeout(5.0):
-            while sorted(engine.child_engine_ids()) != ["reachy_real", "reachy_sim"]:
+            while sorted(server.engine.child_engine_ids()) != ["reachy_real", "reachy_sim"]:
                 await asyncio.sleep(0.01)
         yield url
     finally:
@@ -135,9 +169,25 @@ async def gateway(sdk: FakeSdk) -> AsyncIterator[str]:
         await server.stop()
 
 
-async def test_a_client_sees_both_robots_with_their_four_components(gateway: str) -> None:
+@pytest.fixture
+async def client(gateway: str) -> AsyncIterator[Client]:
+    """A service application connected to the gateway."""
     async with connect(gateway) as connection:
-        profile = (await Client(connection).call("rois.system.get_profile"))["profile"]
+        app = Client(connection)
+        app.start()
+        await app.ok("rois.system.connect")
+        try:
+            yield app
+        finally:
+            await app.close()
+
+
+def completed(command_id: str) -> Callable[[dict[str, Any]], bool]:
+    return lambda params: params.get("command_id") == command_id
+
+
+async def test_a_client_sees_both_robots_with_their_four_components(client: Client) -> None:
+    profile = (await client.ok("rois.system.get_profile", condition=""))["profile"]
     robots = {p["identifier"]["code"]: p for p in profile["sub_profiles"]}
     assert sorted(robots) == ["reachy_real", "reachy_sim"]
     assert sorted(robots["reachy_sim"]["component_ids"]) == [
@@ -148,70 +198,86 @@ async def test_a_client_sees_both_robots_with_their_four_components(gateway: str
     ]
 
 
-async def test_the_simulator_speaks_while_it_reacts(gateway: str, sdk: FakeSdk) -> None:
-    async with connect(gateway) as connection:
-        client = Client(connection)
-        for name in ("reaction", "speech_synthesis"):
-            bound = await client.call("rois.command.bind", component_ref=f"reachy_sim/{name}")
-            assert bound["return_code"] == "OK"
-        result = await client.call(
-            "rois.command.set_parameter",
-            component_ref="reachy_sim/speech_synthesis",
-            parameters=[{"name": "speech_text", "data_type_ref": "", "value": "Hi!"}],
-        )
-        await client.wait("rois.command.completed", {"command_id": result["command_id"]})
-        group = {
-            "command_list": [
-                {
-                    "component_ref": "reachy_sim/speech_synthesis",
-                    "command_type": "start",
-                    "command_id": "speak",
-                },
-                {
-                    "component_ref": "reachy_sim/reaction",
-                    "command_type": "start",
-                    "command_id": "react",
-                },
-            ]
-        }
-        executed = await client.call("rois.command.execute", command_unit_list=[group])
-        assert executed["return_code"] == "OK"
-        for command_id in ("speak", "react"):
-            done = await client.wait("rois.command.completed", {"command_id": command_id})
-            assert done["status"] == "OK"
+async def test_the_simulator_speaks_while_it_reacts(client: Client, sdk: FakeSdk) -> None:
+    for name in ("reaction", "speech_synthesis"):
+        await client.ok("rois.command.bind", component_ref=f"reachy_sim/{name}")
+    result = await client.ok(
+        "rois.command.set_parameter",
+        component_ref="reachy_sim/speech_synthesis",
+        parameters=[{"name": "speech_text", "data_type_ref": "", "value": "Hi!"}],
+    )
+    await client.wait("rois.command.completed", completed(result["command_id"]), 5.0)
+    group = {
+        "branch_list": [
+            {"command_list": [{"component_ref": f"reachy_sim/{name}", "command_type": "start"}]}
+            for name in ("speech_synthesis", "reaction")
+        ]
+    }
+    executed = await client.ok("rois.command.execute", command_unit_list=[group])
+    [item] = executed["command_unit_list"]
+    ids = [branch["command_list"][0]["command_id"] for branch in item["branch_list"]]
+    for command_id in ids:
+        done = await client.wait("rois.command.completed", completed(command_id), 5.0)
+        assert done["status"] == "OK"
     sim = sdk.robot("localhost")
     assert len(sim.played) == 1 and sim.moves[0].finished
     assert sdk.robot("reachy-mini.local").moves == []
 
 
-async def test_the_wireless_moves_while_the_simulator_runs(gateway: str, sdk: FakeSdk) -> None:
-    async with connect(gateway) as connection:
-        client = Client(connection)
-        bound = await client.call("rois.command.bind", component_ref="reachy_real/reaction")
-        assert bound["return_code"] == "OK"
-        unit = {
-            "component_ref": "reachy_real/reaction",
-            "command_type": "start",
-            "command_id": "react",
-        }
-        executed = await client.call("rois.command.execute", command_unit_list=[unit])
-        assert executed["return_code"] == "OK"
-        done = await client.wait("rois.command.completed", {"command_id": "react"})
-        assert done["status"] == "OK"
+async def test_the_wireless_moves_while_the_simulator_runs(client: Client, sdk: FakeSdk) -> None:
+    await client.ok("rois.command.bind", component_ref="reachy_real/reaction")
+    unit = {"component_ref": "reachy_real/reaction", "command_type": "start"}
+    executed = await client.ok("rois.command.execute", command_unit_list=[unit])
+    [assigned] = executed["command_unit_list"]
+    done = await client.wait("rois.command.completed", completed(assigned["command_id"]), 5.0)
+    assert done["status"] == "OK"
     assert sdk.robot("reachy-mini.local").moves[0].finished
     assert sdk.robot("localhost").moves == []
 
 
-async def test_the_wireless_reports_a_person(gateway: str, sdk: FakeSdk) -> None:
-    async with connect(gateway) as connection:
-        client = Client(connection)
-        subscribed = await client.call(
-            "rois.event.subscribe",
-            event_type="person_detected",
-            condition="component_ref = 'reachy_real/person_detection'",
-        )
-        assert subscribed["return_code"] == "OK"
-        sdk.robot("reachy-mini.local").show(1)
-        event = await client.wait("rois.event.notify_event", {"event_type": "person_detected"})
+async def test_the_wireless_reports_a_person(client: Client, sdk: FakeSdk) -> None:
+    ref = "reachy_real/person_detection"
+    await client.ok(
+        "rois.event.subscribe", event_type="person_detected", condition=f"component_ref = '{ref}'"
+    )
+    await client.ok("rois.command.bind", component_ref=ref)
+    sdk.robot("reachy-mini.local").show(1)
+    await client.ok(
+        "rois.command.execute", command_unit_list=[{"component_ref": ref, "command_type": "start"}]
+    )
+    event = await client.wait(
+        "rois.event.notify_event", lambda p: p.get("event_type") == "person_detected", 5.0
+    )
     values = {r["name"]: r["value"] for r in event["results"]}
     assert values["number"] == "1"
+
+
+async def test_the_workflow_passes_in_simulation(gateway: str, sdk: FakeSdk) -> None:
+    """Item 4: the end-to-end run, the same script the simulator and the Wireless run."""
+    sdk.robot("localhost").show(0)
+
+    async def stop() -> None:
+        sdk.stop_daemon("localhost")
+
+    async def start() -> None:
+        sdk.start_daemon("localhost")
+
+    steps = await run_workflow(
+        gateway, "reachy_sim", stop_daemon=stop, start_daemon=start, timeout=10.0
+    )
+    assert [s.name for s in steps] == [
+        "connect",
+        "get_profile",
+        "search",
+        "bind",
+        "set_parameter",
+        "execute with a branch",
+        "subscribe and notify_event",
+        "notify_error and get_error_detail",
+        "the daemon is back",
+        "release",
+        "disconnect",
+    ]
+    sim = sdk.robot("localhost")
+    assert len(sim.played) == 1 and [m.finished for m in sim.moves] == [True]
+    assert sdk.robot("reachy-mini.local").moves == []

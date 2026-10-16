@@ -1,0 +1,22 @@
+# Settings of the Reachy Mini adapter for a Reachy Mini Wireless on the network.
+# OPENROIS_ADAPTER_* environment variables and flags override the four common settings at
+# the top. The sections below them belong to the connection and the components. See
+# README.md for every setting.
+
+gateway_url: ws://127.0.0.1:8765
+engine_id: reachy_real
+robot_address: reachy-mini.local
+log_level: info
+
+simulator: false
+time_scale: 1.0
+
+connection:
+  retry: 3.0
+
+reaction:
+  emotions: false
+
+speech_synthesis:
+  piper: piper
+  # piper_voices: ~/piper-voices

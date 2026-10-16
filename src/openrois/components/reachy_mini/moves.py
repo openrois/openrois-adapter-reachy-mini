@@ -159,6 +159,32 @@ class KeyframeMove:
         return self._head_pose(frame), (math.radians(right), math.radians(left)), None
 
 
+class ScaledMove:
+    """A move played ``scale`` times as long: faster below 1, slower above.
+
+    Args:
+        move: The move to play.
+        scale: The factor on its duration, above 0.
+    """
+
+    def __init__(self, move: Move, scale: float) -> None:
+        if scale <= 0:
+            raise ValueError("The time scale of a move is above 0")
+        self._move = move
+        self._scale = scale
+
+    @property
+    def duration(self) -> float:
+        return self._move.duration * self._scale
+
+    @property
+    def sound_path(self) -> Path | None:
+        return self._move.sound_path
+
+    def evaluate(self, t: float) -> tuple[Any, Any, float | None]:
+        return self._move.evaluate(t / self._scale)
+
+
 class BlendedMove:
     """A move that starts from where the robot is, then plays another move.
 

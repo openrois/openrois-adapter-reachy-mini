@@ -1,11 +1,15 @@
 """PersonDetection for the Reachy Mini.
 
-While connected, the component counts the faces the robot's camera sees, with the face
-detector of the Reachy Mini SDK, and emits ``person_detected`` with the ``number`` of
-persons when the count changes. A new count is reported once it holds for a moment, so
-a face that flickers in and out of detection does not flood the clients. The head never
-moves for it: the component reads camera frames, and leaves the daemon's head tracking
-off.
+From ``start`` to ``stop``, the component counts the faces the robot's camera sees, with
+the face detector of the Reachy Mini SDK, and emits ``person_detected`` with the
+``number`` of persons when the count changes. A new count is reported once it holds for
+a moment, so a face that flickers in and out of detection does not flood the clients.
+Every start reports the count once, so the application that starts the component learns
+the count it starts from: the first count that holds after a fresh start, or at once the
+count of a component that already runs. ``suspend`` holds the events back, and ``resume``
+reports the count if it changed in between. A stop from any application stops the count
+for all of them. The head never moves for it:
+the component reads camera frames, and leaves the daemon's head tracking off.
 
 The simulator renders no camera image while it runs headless, and then the component
 reports nothing. Nor does it while the robot's daemon does not answer: the count resumes
@@ -20,7 +24,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from openrois.components.core import Component, component, subscribe
+from openrois.components.core import Component, component, invoke, subscribe
 from openrois.interfaces.components import PERSON_DETECTION_PROFILE
 
 from openrois.components.reachy_mini.connection import ReachyMiniConnection
@@ -74,34 +78,70 @@ class ReachyMiniPersonDetection(Component):
         width: int = 320,
         threshold: float = 0.6,
     ) -> None:
-        self._connection = connection
+        self._connection = self.uses(connection)
         self._interval = interval
         self._hold = hold
         self._width = width
         self._threshold = threshold
         self._detector: Any = None
         self._watcher: asyncio.Task[None] | None = None
+        self._suspended = False
+        # The count last reported since the start, which a later start reports again.
+        self._count: int | None = None
 
     async def connect(self) -> None:
-        await self._connection.open()
-        try:
-            self._detector = await asyncio.to_thread(_face_detector, self._threshold)
-        except BaseException:
-            await self._connection.close()
-            raise
-        self._watcher = asyncio.create_task(self._watch(), name="person-detection")
+        self._detector = await asyncio.to_thread(_face_detector, self._threshold)
 
     async def disconnect(self) -> None:
+        await self._end()
+
+    @invoke("start")
+    async def start(self) -> None:
+        """Start counting, and complete once the count runs. A running count goes on.
+
+        A count that runs already is reported again, once. A fresh one is reported when
+        its first value holds.
+        """
+        self._suspended = False
+        if self._watcher is None:
+            self._watcher = asyncio.create_task(self._watch(), name="person-detection")
+        elif self._count is not None:
+            self._report(self._count)
+
+    @invoke("stop")
+    async def stop(self) -> None:
+        """Stop counting. The next start reports the count again."""
+        await self._end()
+
+    @invoke("suspend")
+    async def suspend(self) -> None:
+        """Hold the events back while the count keeps running."""
+        if self._watcher is not None:
+            self._suspended = True
+
+    @invoke("resume")
+    async def resume(self) -> None:
+        """Send the events again, starting with the count if it changed."""
+        self._suspended = False
+
+    @subscribe("person_detected")
+    async def person_detected(self) -> None:
+        pass  # The watcher emits the event when the count changes.
+
+    def _report(self, count: int) -> None:
+        self._count = count
+        # The engine sends the event to every subscription, and drops it when there is
+        # none.
+        self.emit("person_detected", number=count, timestamp=datetime.now(UTC))
+
+    async def _end(self) -> None:
+        self._suspended = False
+        self._count = None
         if self._watcher is not None:
             self._watcher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watcher
             self._watcher = None
-        await self._connection.close()
-
-    @subscribe("person_detected")
-    async def person_detected(self) -> None:
-        pass  # The watcher emits the event when the count changes.
 
     async def _watch(self) -> None:
         loop = asyncio.get_running_loop()
@@ -110,6 +150,11 @@ class ReachyMiniPersonDetection(Component):
         while True:
             started = loop.time()
             count = None
+            if self._suspended:
+                # The readings wait for the resume, which reports a changed count once
+                # it holds, as any change.
+                await asyncio.sleep(self._interval)
+                continue
             try:
                 mini = await self._connection.client()
                 count = await asyncio.to_thread(self.count, mini)
@@ -126,9 +171,7 @@ class ReachyMiniPersonDetection(Component):
                 reported = debounce.update(count, loop.time())
                 if reported is not None:
                     logger.info("%d person(s) in view", reported)
-                    # The engine sends the event to every subscription, and drops it
-                    # when there is none.
-                    self.emit("person_detected", number=reported, timestamp=datetime.now(UTC))
+                    self._report(reported)
             await asyncio.sleep(max(0.0, self._interval - (loop.time() - started)))
 
     def count(self, mini: Any) -> int | None:
