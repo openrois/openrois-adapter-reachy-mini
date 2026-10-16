@@ -67,11 +67,16 @@ class Robot:
         return await self.completed(await self.execute(name, command_type))
 
     async def set(self, name: str, **values: str) -> str:
-        """Set parameters of a component, and return the status of the change."""
+        """Set parameters of a component, and return the status of the change.
+
+        BAD_PARAMETER when the component refuses the values, since no command runs then.
+        """
         parameters = [{"name": k, "data_type_ref": "", "value": v} for k, v in values.items()]
         result = await self.call(
             "rois.command.set_parameter", component_ref=self.refs[name], parameters=parameters
         )
+        if result["return_code"] == "BAD_PARAMETER":
+            return "BAD_PARAMETER"
         assert result["return_code"] == "OK", result
         return await self.completed(result["command_id"])
 

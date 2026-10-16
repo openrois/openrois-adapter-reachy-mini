@@ -51,7 +51,7 @@ async def test_a_reaction_is_chosen_with_reaction_ref(host: Host, sdk: FakeSdk) 
 
 async def test_an_unknown_reaction_is_refused(host: Host, sdk: FakeSdk) -> None:
     robot = await reaction(host)
-    assert await robot.set("reaction", reaction_ref="cartwheel") == "ERROR"
+    assert await robot.set("reaction", reaction_ref="cartwheel") == "BAD_PARAMETER"
     assert await robot.run("reaction", "start") == "OK"  # Still the default.
 
 

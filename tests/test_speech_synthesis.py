@@ -105,8 +105,8 @@ async def test_without_the_daemon_the_start_fails_and_the_component_reports_erro
 
 async def test_the_parameters_are_checked(host: Host, sdk: FakeSdk) -> None:
     robot = await speech(host)
-    assert await robot.set("speech_synthesis", volume="150") == "ERROR"
-    assert await robot.set("speech_synthesis", character="robot") == "ERROR"
+    assert await robot.set("speech_synthesis", volume="150") == "BAD_PARAMETER"
+    assert await robot.set("speech_synthesis", character="robot") == "BAD_PARAMETER"
     assert await robot.set("speech_synthesis", character="tone", volume="80") == "OK"
 
 
@@ -174,7 +174,7 @@ async def test_piper_speaks_through_the_component(
 ) -> None:
     voices, command = piper
     robot = await speech(host, PiperSynthesizer(voices, command=[str(command)]))
-    assert await robot.set("speech_synthesis", language="ja") == "ERROR"
+    assert await robot.set("speech_synthesis", language="ja") == "BAD_PARAMETER"
     await robot.set("speech_synthesis", speech_text="Hello")
     assert await robot.run("speech_synthesis", "start") == "OK"
     [(_, seconds)] = sdk.robot().played

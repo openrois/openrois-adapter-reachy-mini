@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameters or runs its commands, PersonDetection included, and reads the command ids
   from the `execute` result, since the engine assigns them. PersonDetection counts only
   from `start` to `stop`.
+- **Breaking:** a value a component refuses, such as an unknown `reaction_ref` or a
+  `volume` above 100, is answered BAD_PARAMETER, and no command runs. Before, the
+  `set_parameter` answered OK and its command completed with ERROR.
 
 ### Added
 
