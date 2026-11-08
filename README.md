@@ -134,11 +134,13 @@ ln -s "$(find "$HOME/.local/gst-plugins-rs" -name libgstrswebrtc.so)" ~/.local/s
 
 Start an [OpenRoIS gateway](https://pypi.org/project/openrois-gateway/) first,
 `openrois-gateway`, on `ws://127.0.0.1:8765` by default. Then start one adapter per robot,
-in a terminal where the environment is active, with the settings files of the
-[next section](#the-settings-files):
+with the settings files of the [next section](#the-settings-files). Each command runs
+until Ctrl+C, so give each its own terminal, where the environment is active:
 
 ```bash
 source ~/venvs/openrois-reachy/bin/activate
+
+# The gateway.
 openrois-gateway
 
 # The simulator on this machine.
