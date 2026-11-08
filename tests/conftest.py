@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,7 +13,7 @@ from openrois.engine import Engine, Session
 from openrois.interfaces.catalog import METHODS_BY_NAME
 from pydantic import BaseModel
 
-from tests._fakes import FakeSdk
+from tests._fakes import FakeDaemonHttp, FakeSdk
 
 
 @pytest.fixture
@@ -140,3 +140,10 @@ async def host() -> AsyncIterator[Host]:
     yield start
     for engine in engines:
         await engine.stop()
+
+
+@pytest.fixture
+def daemon_http() -> Iterator[FakeDaemonHttp]:
+    """The media part of a robot daemon's HTTP API, on 127.0.0.1 at ``daemon_http.port``."""
+    with FakeDaemonHttp().serve() as daemon:
+        yield daemon

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import stat
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from openrois.components.reachy_mini import (
 )
 from openrois_adapter_reachy_mini import ReachyMiniConfig, build_engine
 from openrois_adapter_reachy_mini.cli import load_config
-from openrois_adapter_reachy_mini.workflow import Client, run_workflow
+from openrois_adapter_reachy_mini.workflow import Client, WorkflowFailed, run_workflow
 from tests._fakes import FakeSdk
 
 COMPONENTS = ["person_detection", "reaction", "speech_synthesis", "system_information"]
@@ -95,13 +96,52 @@ def test_an_unknown_setting_is_refused(tmp_path: Path) -> None:
         load(tmp_path, "time_scale: 0\n")
 
 
+def install_piper(folder: Path) -> Path:
+    """A stand-in piper program in ``folder``."""
+    folder.mkdir(parents=True, exist_ok=True)
+    command = folder / "piper"
+    command.write_text("#!/bin/sh\n")
+    command.chmod(command.stat().st_mode | stat.S_IEXEC)
+    return command
+
+
 def test_piper_voices_choose_piper(tmp_path: Path) -> None:
     (tmp_path / "en_US-lessac-medium.onnx").write_bytes(b"")
+    command = install_piper(tmp_path / "bin")
     config = load(
         tmp_path,
-        f"speech_synthesis:\n  piper: /opt/piper/bin/piper\n  piper_voices: {tmp_path}\n",
+        f"speech_synthesis:\n  piper: {command}\n  piper_voices: {tmp_path}\n",
     )
     assert isinstance(config.synthesizer(), PiperSynthesizer)
+
+
+def test_the_piper_command_expands_the_home_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As the README puts it: piper in its own environment under the home folder.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    command = install_piper(tmp_path / "venvs" / "piper" / "bin")
+    (tmp_path / "piper-voices").mkdir()
+    (tmp_path / "piper-voices" / "en_US-lessac-medium.onnx").write_bytes(b"")
+    config = load(
+        tmp_path,
+        "speech_synthesis:\n  piper: ~/venvs/piper/bin/piper\n  piper_voices: ~/piper-voices\n",
+    )
+    assert config.speech_synthesis.piper_command() == [str(command)]
+
+
+def test_a_piper_command_that_is_no_program_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "en_US-lessac-medium.onnx").write_bytes(b"")
+    with pytest.raises(ConfigError, match="speech_synthesis.piper"):
+        load(
+            tmp_path,
+            f"speech_synthesis:\n  piper: piper-not-installed\n  piper_voices: {tmp_path}\n",
+        )
+    # Without voices the robot speaks with the tone, and Piper is not needed.
+    assert isinstance(
+        load(tmp_path, "speech_synthesis:\n  piper: piper-not-installed\n").synthesizer(),
+        ToneSynthesizer,
+    )
 
 
 def test_an_empty_voices_folder_is_refused(tmp_path: Path) -> None:
@@ -125,10 +165,11 @@ def test_time_scale_scales_every_duration_the_adapter_times() -> None:
     [connection] = system.rois_resources()
     assert isinstance(connection, ReachyMiniConnection)
     assert connection.retry == pytest.approx(1.5)
+    assert connection.lost_after == pytest.approx(1.5)
     assert isinstance(speech, ReachyMiniSpeechSynthesis)
     assert speech._tail == pytest.approx(0.15)
     assert isinstance(detection, ReachyMiniPersonDetection)
-    assert (detection._interval, detection._hold) == pytest.approx((0.1, 0.25))
+    assert (detection._interval, detection._hold) == pytest.approx((0.1, 1.0))
     assert isinstance(reaction, ReachyMiniReaction)
     assert reaction.time_scale == 0.5
 
@@ -142,8 +183,11 @@ def test_build_engine_hosts_the_four_components_on_one_connection() -> None:
         ReachyMiniSpeechSynthesis,
         ReachyMiniPersonDetection,
     ]
+    # The connection, and the media of the robot that two of them also use.
+    [connection] = components[0].rois_resources()
+    assert isinstance(connection, ReachyMiniConnection)
     resources = {id(r) for c in components for r in c.rois_resources()}
-    assert len(resources) == 1
+    assert resources == {id(connection), id(connection.media)}
 
 
 @pytest.fixture
@@ -152,9 +196,10 @@ async def gateway(sdk: FakeSdk) -> AsyncIterator[str]:
     server = Gateway(GatewayConfig(engine_id="lab", port=0, child_timeout=1.0))
     await server.start()
     url = f"ws://127.0.0.1:{server.port}"
+    # Faster than real time, so a reaction takes a fraction of a second.
     robots = [
-        ReachyMiniConfig(gateway_url=url, engine_id="reachy_sim", simulator=True),
-        ReachyMiniConfig(gateway_url=url, engine_id="reachy_real"),
+        ReachyMiniConfig(gateway_url=url, engine_id="reachy_sim", simulator=True, time_scale=0.2),
+        ReachyMiniConfig(gateway_url=url, engine_id="reachy_real", time_scale=0.2),
     ]
     adapters = [asyncio.create_task(WsClient(build_engine(s), url).run_async()) for s in robots]
     try:
@@ -184,6 +229,10 @@ async def client(gateway: str) -> AsyncIterator[Client]:
 
 def completed(command_id: str) -> Callable[[dict[str, Any]], bool]:
     return lambda params: params.get("command_id") == command_id
+
+
+def for_subscription(subscribe_id: str) -> Callable[[dict[str, Any]], bool]:
+    return lambda params: params.get("subscribe_id") == subscribe_id
 
 
 async def test_a_client_sees_both_robots_with_their_four_components(client: Client) -> None:
@@ -220,8 +269,8 @@ async def test_the_simulator_speaks_while_it_reacts(client: Client, sdk: FakeSdk
         done = await client.wait("rois.command.completed", completed(command_id), 5.0)
         assert done["status"] == "OK"
     sim = sdk.robot("localhost")
-    assert len(sim.played) == 1 and sim.moves[0].finished
-    assert sdk.robot("reachy-mini.local").moves == []
+    assert len(sim.played) == 1 and sim.head_targets
+    assert sdk.robot("reachy-mini.local").head_targets == []
 
 
 async def test_the_wireless_moves_while_the_simulator_runs(client: Client, sdk: FakeSdk) -> None:
@@ -231,8 +280,8 @@ async def test_the_wireless_moves_while_the_simulator_runs(client: Client, sdk: 
     [assigned] = executed["command_unit_list"]
     done = await client.wait("rois.command.completed", completed(assigned["command_id"]), 5.0)
     assert done["status"] == "OK"
-    assert sdk.robot("reachy-mini.local").moves[0].finished
-    assert sdk.robot("localhost").moves == []
+    assert sdk.robot("reachy-mini.local").head_targets
+    assert sdk.robot("localhost").head_targets == []
 
 
 async def test_the_wireless_reports_a_person(client: Client, sdk: FakeSdk) -> None:
@@ -279,5 +328,70 @@ async def test_the_workflow_passes_in_simulation(gateway: str, sdk: FakeSdk) -> 
         "disconnect",
     ]
     sim = sdk.robot("localhost")
-    assert len(sim.played) == 1 and [m.finished for m in sim.moves] == [True]
-    assert sdk.robot("reachy-mini.local").moves == []
+    assert len(sim.played) == 1 and sim.head_targets
+    assert sdk.robot("reachy-mini.local").head_targets == []
+
+
+async def test_two_clients_subscribe_to_the_person_count_of_one_robot(
+    gateway: str, sdk: FakeSdk
+) -> None:
+    # The gateway holds one session in the adapter for all its clients, and each client
+    # still gets a subscription of its own.
+    ref = "reachy_real/person_detection"
+    sdk.robot("reachy-mini.local").show(1)
+    async with connect(gateway) as first, connect(gateway) as second:
+        clients = [Client(first), Client(second)]
+        ids = []
+        try:
+            for app in clients:
+                app.start()
+                await app.ok("rois.system.connect")
+                subscribed = await app.ok(
+                    "rois.event.subscribe",
+                    event_type="person_detected",
+                    condition=f"component_ref = '{ref}'",
+                )
+                ids.append(subscribed["subscribe_id"])
+            assert len(set(ids)) == 2 and all(ids)
+            await clients[0].ok("rois.command.bind", component_ref=ref)
+            await clients[0].ok(
+                "rois.command.execute",
+                command_unit_list=[{"component_ref": ref, "command_type": "start"}],
+            )
+            for app, subscribe_id in zip(clients, ids, strict=True):
+                await app.wait("rois.event.notify_event", for_subscription(subscribe_id), 5.0)
+        finally:
+            for app in clients:
+                await app.close()
+
+
+async def test_the_workflow_names_a_component_another_application_holds(
+    gateway: str, client: Client, sdk: FakeSdk
+) -> None:
+    # Such as an MCP server that bound the robot's Reaction for an agent.
+    await client.ok("rois.command.bind", component_ref="reachy_sim/reaction")
+
+    async def nothing() -> None:
+        pass
+
+    with pytest.raises(WorkflowFailed, match="reachy_sim/reaction is held by another"):
+        await run_workflow(gateway, "reachy_sim", stop_daemon=nothing, start_daemon=nothing)
+
+
+async def test_the_workflow_fails_when_the_operator_did_not_hear_the_robot(
+    gateway: str, sdk: FakeSdk
+) -> None:
+    questions: list[str] = []
+
+    async def unheard(question: str) -> bool:
+        questions.append(question)
+        return False
+
+    async def nothing() -> None:
+        pass
+
+    with pytest.raises(WorkflowFailed, match="did not hear"):
+        await run_workflow(
+            gateway, "reachy_sim", stop_daemon=nothing, start_daemon=nothing, confirm=unheard
+        )
+    assert questions and "Hello, I am Reachy Mini." in questions[0]

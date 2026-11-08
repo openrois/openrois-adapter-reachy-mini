@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+
+import pytest
 
 from openrois.components.reachy_mini import ReachyMiniConnection, ReachyMiniPersonDetection
 from openrois.components.reachy_mini.person_detection import Debounce
@@ -62,12 +65,12 @@ async def test_reports_the_faces_in_view_and_their_changes(host: Host, sdk: Fake
     assert events[2]["number"] == "0"
 
 
-async def test_frames_are_scaled_to_320_pixels(host: Host, sdk: FakeSdk) -> None:
+async def test_frames_are_scaled_to_640_pixels(host: Host, sdk: FakeSdk) -> None:
     await detection(host, sdk, faces=1)
     async with asyncio.timeout(2.0):
         while not sdk.detected_shapes:
             await asyncio.sleep(0.01)
-    assert sdk.detected_shapes[0] == (180, 320, 3)
+    assert sdk.detected_shapes[0] == (360, 640, 3)
     assert sdk.detector_thresholds == [0.7]
 
 
@@ -179,3 +182,68 @@ async def test_suspend_and_resume_before_start_do_nothing(host: Host, sdk: FakeS
     await asyncio.sleep(0.1)
     assert robot.events() == []
     assert sdk.detected_shapes == []
+
+
+def test_a_count_holds_two_seconds_by_default_on_frames_640_pixels_wide() -> None:
+    component = ReachyMiniPersonDetection(ReachyMiniConnection())
+    assert (component._hold, component._width) == (2.0, 640)
+
+
+async def test_faces_cut_by_the_edge_of_the_frame_do_not_count(host: Host, sdk: FakeSdk) -> None:
+    sdk.robot().show(1, cut=2)
+    connection = ReachyMiniConnection(connection_mode="localhost_only")
+    component = ReachyMiniPersonDetection(connection, interval=0.01, hold=0.05)
+    robot = await host({"person_detection": component})
+    await robot.subscribe("person_detection", "person_detected")
+    assert await robot.run("person_detection", "start") == "OK"
+    [event] = await wait_for_events(robot, 1)
+    assert event["number"] == "1"
+
+
+async def test_faces_cut_by_the_edge_count_when_asked(host: Host, sdk: FakeSdk) -> None:
+    sdk.robot().show(1, cut=2)
+    connection = ReachyMiniConnection(connection_mode="localhost_only")
+    component = ReachyMiniPersonDetection(
+        connection, interval=0.01, hold=0.05, ignore_edge_faces=False
+    )
+    robot = await host({"person_detection": component})
+    await robot.subscribe("person_detection", "person_detected")
+    assert await robot.run("person_detection", "start") == "OK"
+    [event] = await wait_for_events(robot, 1)
+    assert event["number"] == "3"
+
+
+async def test_the_face_model_is_tried_again_until_it_loads(
+    host: Host, sdk: FakeSdk, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Without the Hugging Face Hub and without a cached model, at first.
+    sdk.detector_failures = 3
+    sdk.robot().show(1)
+    connection = ReachyMiniConnection(connection_mode="localhost_only")
+    component = ReachyMiniPersonDetection(connection, interval=0.01, hold=0.05, model_retry=0.05)
+    with caplog.at_level(logging.WARNING):
+        robot = await host({"person_detection": component})
+        await robot.subscribe("person_detection", "person_detected")
+        async with asyncio.timeout(1.0):
+            while await robot.status("person_detection") != "ERROR":
+                await asyncio.sleep(0.005)
+    assert "Hugging Face" in caplog.text
+    async with asyncio.timeout(3.0):
+        while await robot.status("person_detection") != "READY":
+            await asyncio.sleep(0.01)
+    assert sdk.detector_failures == 0
+    assert await robot.run("person_detection", "start") == "OK"
+    [event] = await wait_for_events(robot, 1)
+    assert event["number"] == "1"
+
+
+async def test_the_model_loader_stops_with_the_engine(host: Host, sdk: FakeSdk) -> None:
+    sdk.detector_failures = 1000
+    connection = ReachyMiniConnection(connection_mode="localhost_only")
+    component = ReachyMiniPersonDetection(connection, model_retry=0.01)
+    robot = await host({"person_detection": component})
+    await asyncio.sleep(0.05)
+    await robot.engine.stop()
+    left = sdk.detector_failures
+    await asyncio.sleep(0.1)
+    assert sdk.detector_failures == left

@@ -3,7 +3,9 @@
 From ``start`` to ``stop``, the component counts the faces the robot's camera sees, with
 the face detector of the Reachy Mini SDK, and emits ``person_detected`` with the
 ``number`` of persons when the count changes. A new count is reported once it holds for
-a moment, so a face that flickers in and out of detection does not flood the clients.
+``hold`` seconds, so a face that flickers in and out of detection does not flood the
+clients, and a face that the edge of the frame cuts off does not count, since its score
+comes and goes as the person moves.
 Every start reports the count once, so the application that starts the component learns
 the count it starts from: the first count that holds after a fresh start, or at once the
 count of a component that already runs. ``suspend`` holds the events back, and ``resume``
@@ -14,6 +16,10 @@ the component reads camera frames, and leaves the daemon's head tracking off.
 The simulator renders no camera image while it runs headless, and then the component
 reports nothing. Nor does it while the robot's daemon does not answer: the count resumes
 once the connection reaches the daemon again.
+
+The face detector's model comes from the Hugging Face Hub the first time, and from the
+cache after. While it cannot be had, the component reports ERROR with the reason, and
+tries again, less and less often, until it has the model.
 """
 
 from __future__ import annotations
@@ -25,11 +31,19 @@ from datetime import UTC, datetime
 from typing import Any
 
 from openrois.components.core import Component, component, invoke, subscribe
+from openrois.interfaces.common import ComponentStatus
 from openrois.interfaces.components import PERSON_DETECTION_PROFILE
 
 from openrois.components.reachy_mini.connection import ReachyMiniConnection
 
 logger = logging.getLogger(__name__)
+
+# How long the face model loader waits before it tries again at most, in seconds.
+_MAX_MODEL_RETRY = 60.0
+
+# How close to the edge of the frame a face counts as cut off, in pixels of the frame
+# the detector sees.
+_EDGE = 2.0
 
 
 class Debounce:
@@ -64,9 +78,13 @@ class ReachyMiniPersonDetection(Component):
         connection: The connection to the robot, shared with its other components.
         interval: How often a frame is checked, in seconds.
         hold: How long a new count has to hold before it is reported, in seconds.
-        width: The width the frames are scaled down to before detection, in pixels. The
-            daemon's own face tracker uses 320.
+        width: The width the frames are scaled down to before detection, in pixels. A
+            face across the room is only a few pixels wide below 640.
         threshold: The detection score from which a face counts, from 0 to 1.
+        ignore_edge_faces: Whether a face that the edge of the frame cuts off is left
+            out of the count.
+        model_retry: How long the first wait is before the face model is tried again,
+            in seconds. Each wait doubles, up to a minute.
     """
 
     def __init__(
@@ -74,26 +92,68 @@ class ReachyMiniPersonDetection(Component):
         connection: ReachyMiniConnection,
         *,
         interval: float = 0.2,
-        hold: float = 0.5,
-        width: int = 320,
+        hold: float = 2.0,
+        width: int = 640,
         threshold: float = 0.6,
+        ignore_edge_faces: bool = True,
+        model_retry: float = 2.0,
     ) -> None:
         self._connection = self.uses(connection)
+        self.uses(connection.media)
         self._interval = interval
         self._hold = hold
         self._width = width
         self._threshold = threshold
+        self._ignore_edge_faces = ignore_edge_faces
+        self._model_retry = model_retry
         self._detector: Any = None
+        self._loader: asyncio.Task[None] | None = None
         self._watcher: asyncio.Task[None] | None = None
         self._suspended = False
         # The count last reported since the start, which a later start reports again.
         self._count: int | None = None
 
     async def connect(self) -> None:
-        self._detector = await asyncio.to_thread(_face_detector, self._threshold)
+        # The model may have to come from the Hub, which may be out of reach for now.
+        self._loader = asyncio.create_task(self._load(), name="person-detection-model")
 
     async def disconnect(self) -> None:
         await self._end()
+        if self._loader is not None:
+            self._loader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._loader
+            self._loader = None
+
+    async def _load(self) -> None:
+        """Load the face detector, and report ERROR while its model cannot be had."""
+        wait = self._model_retry
+        failing = False
+        while True:
+            try:
+                self._detector = await asyncio.to_thread(_face_detector, self._threshold)
+            except Exception as exc:
+                if not failing:
+                    logger.warning(
+                        "The face detector's model is not in the Hugging Face cache, and the "
+                        "Hub cannot be reached, so PersonDetection waits for it, trying again "
+                        "in %g s at first: %s: %s",
+                        wait,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    self.raise_status(
+                        ComponentStatus.ERROR,
+                        f"The face detector's model is not available, trying again: {exc}",
+                    )
+                failing = True
+                await asyncio.sleep(wait)
+                wait = min(wait * 2, _MAX_MODEL_RETRY)
+                continue
+            if failing:
+                logger.info("The face detector's model is loaded")
+                self.clear_status()
+            return
 
     @invoke("start")
     async def start(self) -> None:
@@ -155,6 +215,10 @@ class ReachyMiniPersonDetection(Component):
                 # it holds, as any change.
                 await asyncio.sleep(self._interval)
                 continue
+            if self._detector is None:
+                # The model is still loading, and the component reports why.
+                await asyncio.sleep(self._interval)
+                continue
             try:
                 mini = await self._connection.client()
                 count = await asyncio.to_thread(self.count, mini)
@@ -182,7 +246,20 @@ class ReachyMiniPersonDetection(Component):
         step = max(1, int(frame.shape[1]) // self._width)
         if step > 1:
             frame = frame[::step, ::step].copy()
-        return len(self._detector.detect(frame))
+        faces = self._detector.detect(frame)
+        if not self._ignore_edge_faces:
+            return len(faces)
+        height, width = int(frame.shape[0]), int(frame.shape[1])
+        return sum(1 for face in faces if not _cut_off(face, width, height))
+
+
+def _cut_off(face: Any, width: int, height: int) -> bool:
+    """Whether the edge of the frame cuts a face off: its box reaches the edge."""
+    bbox = getattr(face, "bbox", None)
+    if bbox is None:
+        return False
+    x, y, w, h = (float(v) for v in bbox)
+    return x <= _EDGE or y <= _EDGE or x + w >= width - _EDGE or y + h >= height - _EDGE
 
 
 def _face_detector(threshold: float) -> Any:

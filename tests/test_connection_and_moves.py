@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import sys
 
@@ -25,7 +26,7 @@ from tests.conftest import Host, Robot
 def four(connection: ReachyMiniConnection) -> dict[str, object]:
     return {
         "system_information": ReachyMiniSystemInformation(connection),
-        "reaction": ReachyMiniReaction(connection),
+        "reaction": ReachyMiniReaction(connection, time_scale=0.3),
         "speech_synthesis": ReachyMiniSpeechSynthesis(connection),
         "person_detection": ReachyMiniPersonDetection(connection),
     }
@@ -166,3 +167,172 @@ def test_a_blended_move_starts_from_the_current_pose() -> None:
     assert body_yaw is None  # The expression leaves the body where it is.
     head, _, _ = blended.evaluate(0.4)
     assert pitch_of(head) == pytest.approx(10.0, abs=0.01)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        KeyError("Producer reachymini not found."),
+        RuntimeError("Failed to create webrtcsrc element"),
+        OSError("[Errno 113] No route to host"),
+    ],
+    ids=["producer-not-found", "gstreamer", "no-route"],
+)
+async def test_any_error_while_connecting_again_is_retried(
+    host: Host, sdk: FakeSdk, error: Exception
+) -> None:
+    # As a daemon that restarts: its state stream answers before its media are ready.
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
+    robot = await host(four(connection))
+    sdk.stop_daemon()
+    assert await robot.run("reaction", "start") == "ERROR"
+    sdk.connect_failures.append(error)
+    sdk.start_daemon()
+    await ready(robot, "reaction")
+    assert not sdk.connect_failures
+    assert await robot.run("reaction", "start") == "OK"
+    await robot.engine.stop()  # The watchdog ends without an error.
+    assert connection.current is None
+
+
+async def test_an_error_on_the_first_connect_is_retried(host: Host, sdk: FakeSdk) -> None:
+    sdk.connect_failures.append(KeyError("Producer reachymini not found."))
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
+    robot = await host(four(connection))
+    assert connection.is_open
+    await ready(robot, "reaction")
+    await ready(robot, "speech_synthesis")
+    assert await robot.run("reaction", "start") == "OK"
+
+
+async def test_the_watchdog_survives_a_failing_check(
+    host: Host, sdk: FakeSdk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
+    robot = await host(four(connection))
+    checks = 0
+
+    def broken(mini: object) -> bool:
+        nonlocal checks
+        checks += 1
+        raise RuntimeError("The SDK broke")
+
+    monkeypatch.setattr("openrois.components.reachy_mini.connection._alive", broken)
+    await asyncio.sleep(0.1)
+    assert checks > 1  # Each failed check is followed by the next one.
+    monkeypatch.undo()
+    sdk.install(monkeypatch)
+    sdk.stop_daemon()
+    async with asyncio.timeout(2.0):
+        while await robot.status("reaction") != "ERROR":
+            await asyncio.sleep(0.01)
+    sdk.start_daemon()
+    await ready(robot, "reaction")
+
+
+async def test_failed_media_leave_the_robot_moving(host: Host, sdk: FakeSdk) -> None:
+    # The daemon answers, but its WebRTC signalling refuses: motion works, the camera
+    # and the speaker do not, and the watchdog tries them again.
+    sdk.media_failures.append(ConnectionRefusedError("[Errno 111] Connection refused"))
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.3)
+    robot = await host(four(connection))
+    assert await robot.status("speech_synthesis") == "ERROR"
+    assert await robot.status("person_detection") == "ERROR"
+    assert await robot.status("reaction") == "READY"
+    assert await robot.run("reaction", "start") == "OK"
+    # The next client has working media, and replaces the one without.
+    await ready(robot, "speech_synthesis")
+    await ready(robot, "person_detection")
+    async with asyncio.timeout(1.0):
+        while not sdk.clients[0].closed:
+            await asyncio.sleep(0.01)
+    assert connection.current is sdk.clients[1]
+    assert await robot.set("speech_synthesis", speech_text="Hello") == "OK"
+    assert await robot.run("speech_synthesis", "start") == "OK"
+
+
+async def test_media_that_keep_failing_raise_error_on_the_media_components_only(
+    host: Host, sdk: FakeSdk, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING)
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
+    robot = await host(four(connection))
+    sdk.stop_daemon()
+    await asyncio.sleep(0.05)
+    sdk.media_failures.extend(KeyError("Producer reachymini not found.") for _ in range(1000))
+    sdk.start_daemon()
+    async with asyncio.timeout(2.0):
+        while await robot.status("reaction") != "READY":
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.1)
+    assert await robot.status("speech_synthesis") == "ERROR"
+    assert await robot.status("person_detection") == "ERROR"
+    assert await robot.status("reaction") == "READY"
+    assert "camera and speaker do not work" in caplog.text
+    assert "KeyError" in caplog.text
+    assert await robot.run("reaction", "start") == "OK"
+    # The client in use stays, and every client tried meanwhile is let go.
+    async with asyncio.timeout(1.0):
+        while len(sdk.open_clients()) > 1:
+            await asyncio.sleep(0.01)
+    assert connection.current is sdk.clients[1]
+
+
+async def test_a_robot_without_wifi_address_never_streams_this_machine(
+    host: Host, sdk: FakeSdk, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The SDK would fetch the media from this machine, the simulator's, without the
+    # robot's Wi-Fi address.
+    robot_media = sdk.robot("192.168.1.42")
+    robot_media.wlan_ip = None
+    connection = ReachyMiniConnection(host="192.168.1.42", connection_mode="network", retry=60.0)
+    with caplog.at_level(logging.WARNING):
+        robot = await host(four(connection))
+    assert await robot.status("person_detection") == "ERROR"
+    assert await robot.status("speech_synthesis") == "ERROR"
+    assert await robot.status("reaction") == "READY"
+    assert "no Wi-Fi address" in caplog.text
+    assert connection.current.media.audio is None
+
+
+async def test_a_short_pause_of_the_state_stream_changes_nothing(host: Host, sdk: FakeSdk) -> None:
+    # Over Wi-Fi the state stream pauses now and then, its connection still open.
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01, lost_after=0.5)
+    robot = await host(four(connection))
+    sdk.stall()
+    await asyncio.sleep(0.2)
+    sdk.stall(stalled=False)
+    await asyncio.sleep(0.1)
+    assert robot.sent("rois.system.notify_error") == []
+    assert len(sdk.clients) == 1
+    assert await robot.run("reaction", "start") == "OK"
+
+
+async def test_a_long_pause_of_the_state_stream_loses_the_daemon(host: Host, sdk: FakeSdk) -> None:
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01, lost_after=0.2)
+    robot = await host(four(connection))
+    sdk.stall()
+    async with asyncio.timeout(2.0):
+        while not robot.sent("rois.system.notify_error"):
+            await asyncio.sleep(0.01)
+    await ready(robot, "reaction")
+    assert len(sdk.clients) == 2
+    assert sdk.clients[0].closed
+
+
+@pytest.mark.parametrize(
+    ("host_name", "warned"),
+    [
+        ("reachy-mini.local", False),
+        ("192.168.1.42", False),
+        ("fe80::1", False),
+        ("reachy-mini", True),
+        ("reachy-mini.lan", True),
+    ],
+)
+def test_a_name_the_daemon_refuses_is_warned_about(
+    host_name: str, warned: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        ReachyMiniConnection(host=host_name, connection_mode="network")
+    assert ("IP address" in caplog.text) is warned

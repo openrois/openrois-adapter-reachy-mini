@@ -8,8 +8,8 @@ engine ids put two robots behind one gateway::
     # The simulator on this machine
     openrois-adapter-reachy-mini --config adapter.sim.yaml
 
-    # The Reachy Mini Wireless on the network
-    openrois-adapter-reachy-mini --config adapter.yaml --robot-address reachy-mini.local
+    # The Reachy Mini Wireless on the network, at its IP address
+    openrois-adapter-reachy-mini --config adapter.yaml --robot-address 192.168.1.42
 
 The components are ``<engine id>/system_information``, ``<engine id>/reaction``,
 ``<engine id>/speech_synthesis`` and ``<engine id>/person_detection``. Without Piper
@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -69,6 +70,11 @@ class ConnectionSettings(_Section):
     port: int = Field(default=8000, ge=1, le=65535, description="The port of the daemon.")
     timeout: float = Field(default=5.0, gt=0, description="Seconds to wait for the daemon.")
     retry: float = Field(default=3.0, gt=0, description="Seconds between two checks of the daemon.")
+    lost_after: float = Field(
+        default=3.0,
+        gt=0,
+        description="Seconds the daemon may send no state before the adapter connects again.",
+    )
 
 
 class ReactionSettings(_Section):
@@ -98,26 +104,39 @@ class SpeechSettings(_Section):
     def _expand(cls, value: Path | None) -> Path | None:
         return value.expanduser() if value is not None else None
 
+    def piper_command(self) -> list[str]:
+        """The command that runs Piper, with ``~`` expanded in the program's path."""
+        command = shlex.split(self.piper)
+        if command:
+            command[0] = os.path.expanduser(command[0])
+        return command
+
 
 class PersonDetectionSettings(_Section):
     """The PersonDetection component."""
 
     interval: float = Field(default=0.2, gt=0, description="Seconds between two frames.")
-    hold: float = Field(default=0.5, ge=0, description="Seconds a new count holds first.")
+    hold: float = Field(default=2.0, ge=0, description="Seconds a new count holds first.")
     threshold: float = Field(
         default=0.6, gt=0, le=1, description="The detection score from which a face counts."
+    )
+    ignore_edge_faces: bool = Field(
+        default=True, description="Leave faces that the edge of the frame cuts off uncounted."
     )
 
 
 class ReachyMiniConfig(AdapterConfig):
     """The settings of one Reachy Mini adapter, one section per component.
 
-    ``robot_address`` is the host of the robot's daemon on the network, for example the
-    Reachy Mini Wireless at ``reachy-mini.local``. ``simulator: true`` reaches the daemon
+    ``robot_address`` is the host of the robot's daemon on the network: its IP address,
+    which is the most reliable, or a ``.local`` name such as ``reachy-mini.local``. The
+    daemon refuses any other name from release 1.12 on, and then looks as if it does not
+    answer. ``simulator: true`` reaches the daemon
     on this machine instead, such as Pollen's simulator. ``time_scale`` multiplies every
     duration the adapter times itself: the reactions and their blends, the checks of the
-    daemon, the frames of PersonDetection and the hold of a new count, and the wait after
-    a speech. What the robot or the simulator takes for a motion stays as it is.
+    daemon and how long it may send nothing, the frames of PersonDetection and the hold
+    of a new count, and the wait after a speech. What the robot or the simulator takes
+    for a motion stays as it is.
     """
 
     engine_id: str = "reachy_mini"
@@ -146,7 +165,7 @@ class ReachyMiniConfig(AdapterConfig):
         speech = self.speech_synthesis
         if speech.piper_voices is None:
             return ToneSynthesizer()
-        return PiperSynthesizer(speech.piper_voices, command=shlex.split(speech.piper))
+        return PiperSynthesizer(speech.piper_voices, command=speech.piper_command())
 
 
 def build_engine(config: ReachyMiniConfig) -> Engine:
@@ -157,6 +176,7 @@ def build_engine(config: ReachyMiniConfig) -> Engine:
         port=config.connection.port,
         timeout=config.connection.timeout,
         retry=config.connection.retry * config.time_scale,
+        lost_after=config.connection.lost_after * config.time_scale,
     )
     reaction = config.reaction
     detection = config.person_detection
@@ -187,6 +207,7 @@ def build_engine(config: ReachyMiniConfig) -> Engine:
             interval=detection.interval * config.time_scale,
             hold=detection.hold * config.time_scale,
             threshold=detection.threshold,
+            ignore_edge_faces=detection.ignore_edge_faces,
         ),
     )
     return engine
@@ -198,8 +219,8 @@ def load_config(
     """The settings, from the defaults, adapter.yaml, the environment and the flags.
 
     Raises:
-        ConfigError: The file cannot be read, a setting is invalid, or the Piper voices
-            folder holds no voice.
+        ConfigError: The file cannot be read, a setting is invalid, the Piper voices
+            folder holds no voice, or the piper command is not a program.
         SystemExit: For an unknown flag or ``--help``.
     """
     config = load_adapter_config(
@@ -214,6 +235,17 @@ def load_config(
         raise ConfigError(
             f"Invalid configuration:\n  speech_synthesis.piper_voices: {exc}"
         ) from exc
+    speech = config.speech_synthesis
+    if speech.piper_voices is not None:
+        # Found now rather than at the first speech, which would fail without a word.
+        command = speech.piper_command()
+        if not command or shutil.which(command[0]) is None:
+            program = command[0] if command else ""
+            raise ConfigError(
+                "Invalid configuration:\n"
+                f"  speech_synthesis.piper: {program!r} is not a program on PATH. Give the "
+                "path of the piper in its own environment, such as ~/venvs/piper/bin/piper"
+            )
     return config
 
 
