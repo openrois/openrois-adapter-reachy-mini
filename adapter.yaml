@@ -5,6 +5,8 @@
 
 gateway_url: ws://127.0.0.1:8765
 engine_id: reachy_real
+# The robot's IP address is the most reliable. A .local name works too, and the daemon
+# refuses any other name.
 robot_address: reachy-mini.local
 log_level: info
 
