@@ -315,6 +315,27 @@ async def test_a_new_start_while_the_sound_is_on_its_way_uses_its_own_file(
     assert log[-1] == "play"
 
 
+async def test_a_new_start_right_after_a_stop_stops_the_late_sound_first(
+    host: Host, sdk: FakeSdk
+) -> None:
+    # The stop comes while the sound is on its way, and a new start at once, which
+    # cancels the start that waits to stop the sound once it plays.
+    sdk.robot().play_delay = 0.5
+    robot = await speech(host, ToneSynthesizer(seconds_per_character=0.05))
+    await robot.set("speech_synthesis", speech_text="A long sentence to cut off.")
+    first = await robot.execute("speech_synthesis", "start")
+    await asyncio.to_thread(sdk.robot().sending.wait, 5.0)
+    assert await robot.run("speech_synthesis", "stop") == "OK"
+    await robot.set("speech_synthesis", speech_text="", ssml_text="")
+    second = await robot.execute("speech_synthesis", "start")
+    assert await robot.completed(first) == "ABORT"
+    assert await robot.completed(second) == "ERROR"
+    log = sdk.robot().log
+    assert log.count("play") == 1
+    assert "stop_playing" in log[log.index("play") :]
+    assert not sdk.robot().wobbling
+
+
 async def network_speech(host: Host, daemon: FakeDaemonHttp) -> Robot:
     """SpeechSynthesis of a robot on the network, whose daemon plays the sounds."""
     connection = ReachyMiniConnection(host="127.0.0.1", port=daemon.port, connection_mode="network")

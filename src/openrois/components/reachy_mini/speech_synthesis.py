@@ -226,11 +226,12 @@ class ReachyMiniSpeechSynthesis(Component):
             if not utterance.cut:
                 # The stop came before the sound played, so it could not cut it off.
                 # A sound already on its way plays, and is stopped here once it does.
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(asyncio.shield(playback), _LATE_PLAY)
-                if utterance.playing.is_set():
-                    with contextlib.suppress(Exception):
-                        await asyncio.to_thread(media.stop_playing)
+                # A new start right after the stop cancels this wait again: the late
+                # stop still runs to its end, before the new start plays its sound.
+                late = asyncio.ensure_future(_stop_late(media, playback, utterance))
+                while not late.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(late)
             raise
         finally:
             if self._utterance is utterance:
@@ -285,6 +286,15 @@ def _play(media: Any, daemon: DaemonMedia | None, played: Path, utterance: _Utte
             return
         daemon.play(remote)
     utterance.playing.set()
+
+
+async def _stop_late(media: Any, playback: asyncio.Future[None], utterance: _Utterance) -> None:
+    """Wait for a sound still on its way to the robot, and stop it once it plays."""
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(asyncio.shield(playback), _LATE_PLAY)
+    if utterance.playing.is_set():
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(media.stop_playing)
 
 
 def _over_webrtc(media: Any) -> bool:
