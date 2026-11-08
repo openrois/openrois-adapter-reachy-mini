@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import openrois.components.core
 
@@ -32,8 +33,8 @@ def test_components_import_without_the_sdk() -> None:
     assert result.stdout.strip() == "False"
 
 
-def test_pinned_openrois_packages() -> None:
-    """The pinned commit has the engine on the catalog and the speech profile."""
+def test_openrois_packages_have_the_engine_and_the_four_profiles() -> None:
+    """The OpenRoIS releases the adapter requires have the engine and the four profiles."""
     from openrois.engine import Engine
     from openrois.interfaces.components import (
         PERSON_DETECTION_PROFILE,
@@ -53,3 +54,12 @@ def test_pinned_openrois_packages() -> None:
     ]
     assert codes == ["SystemInformation", "Reaction", "SpeechSynthesis", "PersonDetection"]
     assert Engine is not None
+
+
+def test_the_readme_carries_the_shipped_adapter_files() -> None:
+    """The wheel has no adapter.yaml, so the README gives both files to copy."""
+    root = Path(__file__).parent.parent
+    readme = (root / "README.md").read_text()
+    for name in ("adapter.yaml", "adapter.sim.yaml"):
+        content = (root / name).read_text().rstrip("\n")
+        assert f"```yaml\n{content}\n```" in readme, name

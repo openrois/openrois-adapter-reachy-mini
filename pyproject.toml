@@ -22,12 +22,14 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Human Machine Interfaces",
 ]
-# The OpenRoIS packages come from the openrois repository, pinned to a dev commit,
-# until their first release, which the adapter joins.
+# The OpenRoIS packages from PyPI. Engine 0.1.0a2 is the floor because the adapter
+# process hosts the child engine, and from that release a second gateway client that
+# subscribes to the same event gets its own subscription. The cap keeps a later
+# pre-release series, which may change the component API, from breaking this release.
 dependencies = [
-    "openrois-interfaces @ git+https://github.com/openrois/openrois@092063db2df3eef8f934ea2b84dbe77b248e80e3#subdirectory=interfaces/python",
-    "openrois-components-core @ git+https://github.com/openrois/openrois@092063db2df3eef8f934ea2b84dbe77b248e80e3#subdirectory=components/core",
-    "openrois-engine @ git+https://github.com/openrois/openrois@092063db2df3eef8f934ea2b84dbe77b248e80e3#subdirectory=engine",
+    "openrois-interfaces>=0.1.0a6,<0.2",
+    "openrois-components-core>=0.1.0a1,<0.2",
+    "openrois-engine>=0.1.0a2,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +42,7 @@ dev = [
     "pytest-asyncio>=1.0",
     "mypy>=1.8",
     "ruff>=0.4",
-    "openrois-gateway @ git+https://github.com/openrois/openrois@092063db2df3eef8f934ea2b84dbe77b248e80e3#subdirectory=gateway",
+    "openrois-gateway>=0.1.0a1,<0.2",
 ]
 
 [project.urls]
@@ -50,9 +52,6 @@ Issues = "https://github.com/openrois/openrois-adapter-reachy-mini/issues"
 
 [project.scripts]
 openrois-adapter-reachy-mini = "openrois_adapter_reachy_mini.cli:main"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 # openrois and openrois.components are namespace packages shared with the other OpenRoIS
 # distributions, so this one ships only openrois/components/reachy_mini/, next to the

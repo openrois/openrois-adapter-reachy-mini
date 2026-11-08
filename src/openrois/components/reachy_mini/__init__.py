@@ -11,7 +11,8 @@ that declares the profile constant of its type, so an ``Engine`` serves it as th
   the voice.
 - ``ReachyMiniPersonDetection``: the number of faces the camera sees.
 
-The components of one robot share one ``ReachyMiniConnection``::
+The components of one robot share one ``ReachyMiniConnection``, and those that need the
+camera or the speaker also use its ``media``::
 
     connection = ReachyMiniConnection(connection_mode="localhost_only")
     engine = Engine("reachy_sim")
@@ -21,7 +22,11 @@ The components of one robot share one ``ReachyMiniConnection``::
 The components import the SDK when they connect, so this package imports without it.
 """
 
-from openrois.components.reachy_mini.connection import ConnectionMode, ReachyMiniConnection
+from openrois.components.reachy_mini.connection import (
+    ConnectionMode,
+    ReachyMiniConnection,
+    ReachyMiniMedia,
+)
 from openrois.components.reachy_mini.moves import EXPRESSIONS, Keyframe
 from openrois.components.reachy_mini.person_detection import ReachyMiniPersonDetection
 from openrois.components.reachy_mini.reaction import (
@@ -45,6 +50,7 @@ __all__ = [
     "Keyframe",
     "PiperSynthesizer",
     "ReachyMiniConnection",
+    "ReachyMiniMedia",
     "ReachyMiniPersonDetection",
     "ReachyMiniReaction",
     "ReachyMiniSpeechSynthesis",

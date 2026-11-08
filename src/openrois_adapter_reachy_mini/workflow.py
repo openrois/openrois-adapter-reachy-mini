@@ -13,6 +13,11 @@ The workflow stops the daemon and starts it again through the daemon's own HTTP 
 it runs the same against the simulator and the Reachy Mini Wireless. It needs the robot's
 camera to see the room: the count of persons it waits for may be 0. A simulator that
 runs headless renders no camera image, so run it with a window.
+
+A completed speech only says that the daemon took the sound, so after the speech the
+workflow asks whether the robot was heard, unless ``--yes`` is given. Reaction and
+SpeechSynthesis take one bind at a time: while another application holds one, such as
+an MCP server that bound it for an agent, the workflow stops at ``bind`` and says so.
 """
 
 from __future__ import annotations
@@ -39,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 #: Stops or starts the robot's daemon.
 type DaemonSwitch = Callable[[], Awaitable[None]]
+
+#: Asks the operator a yes or no question, and returns the answer.
+type Confirm = Callable[[str], Awaitable[bool]]
 
 
 class WorkflowFailed(Exception):  # noqa: N818, the name says what happened to the run.
@@ -136,6 +144,18 @@ def daemon_api(base_url: str) -> tuple[DaemonSwitch, DaemonSwitch]:
     return stop, start
 
 
+def media_status(base_url: str) -> dict[str, Any]:
+    """What the daemon at ``base_url`` says about its camera and speaker.
+
+    Raises:
+        OSError: The daemon cannot be reached.
+    """
+    url = f"{base_url.rstrip('/')}/api/media/status"
+    with urllib.request.urlopen(url, timeout=10.0) as response:
+        status: dict[str, Any] = json.loads(response.read())
+    return status
+
+
 async def run_workflow(
     gateway_url: str,
     engine_id: str,
@@ -144,6 +164,7 @@ async def run_workflow(
     start_daemon: DaemonSwitch,
     timeout: float = 30.0,
     on_step: Callable[[Step], None] | None = None,
+    confirm: Confirm | None = None,
 ) -> list[Step]:
     """Run the workflow against the robot ``engine_id`` behind a gateway.
 
@@ -154,6 +175,8 @@ async def run_workflow(
         start_daemon: Starts the robot's daemon again.
         timeout: How long a step waits for a notification, in seconds.
         on_step: Called after each step that passed.
+        confirm: Asks the operator whether the robot spoke, after the speech. Without
+            it, the completion status alone decides.
 
     Returns:
         The steps, in order, each with how long it took.
@@ -177,7 +200,7 @@ async def run_workflow(
         client = Client(connection)
         client.start()
         try:
-            await _workflow(client, engine_id, stop_daemon, start_daemon, timeout, passed)
+            await _workflow(client, engine_id, stop_daemon, start_daemon, timeout, passed, confirm)
         finally:
             await client.close()
     return steps
@@ -190,6 +213,7 @@ async def _workflow(
     start_daemon: DaemonSwitch,
     timeout: float,
     passed: Callable[..., None],
+    confirm: Confirm | None,
 ) -> None:
     def ref(name: str) -> str:
         return f"{engine_id}/{name}"
@@ -229,7 +253,14 @@ async def _workflow(
     passed("search", ", ".join(found.values()))
 
     for name in found:
-        await client.ok("rois.command.bind", component_ref=ref(name))
+        bound = await client.call("rois.command.bind", component_ref=ref(name))
+        if bound.get("return_code") == "OUT_OF_RESOURCES":
+            raise WorkflowFailed(
+                f"{ref(name)} is held by another application, such as an MCP server that "
+                "bound it for an agent. Release it there, or stop that application, first"
+            )
+        if bound.get("return_code") != "OK":
+            raise WorkflowFailed(f"rois.command.bind answered {bound.get('return_code')}: {bound}")
     passed("bind", ", ".join(found.values()))
 
     text = "Hello, I am Reachy Mini."
@@ -278,6 +309,10 @@ async def _workflow(
         done = await client.wait("rois.command.completed", completed(command_id), timeout)
         if done["status"] != "OK":
             raise WorkflowFailed(f"{command_id} completed with {done['status']}")
+    if confirm is not None and not await confirm(
+        f"Did the robot say {text!r} while it moved its head? [y/N] "
+    ):
+        raise WorkflowFailed("The speech completed OK, but the operator did not hear it")
     passed("execute with a branch", ", ".join(ids))
 
     condition = f"component_ref = '{ref('person_detection')}'"
@@ -343,11 +378,26 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="the HTTP API of the robot's daemon, for example http://reachy-mini.local:8000",
     )
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds a step waits")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="do not ask whether the robot was heard, and trust the speech's status",
+    )
     args = parser.parse_args(argv)
     stop, start = daemon_api(args.daemon)
 
     def show(step: Step) -> None:
         print(f"PASS  {step.name:<36} {step.seconds:6.2f} s  {step.detail}", flush=True)
+
+    async def ask(question: str) -> bool:
+        answer = await asyncio.to_thread(input, question)
+        return answer.strip().lower() in ("y", "yes")
+
+    try:
+        media = media_status(args.daemon)
+        print(f"Daemon media: {json.dumps(media)}", flush=True)
+    except (OSError, ValueError) as exc:
+        print(f"Daemon media: unknown ({exc})", flush=True)
 
     try:
         asyncio.run(
@@ -358,6 +408,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 start_daemon=start,
                 timeout=args.timeout,
                 on_step=show,
+                confirm=None if args.yes else ask,
             )
         )
     except (WorkflowFailed, TimeoutError, OSError) as exc:

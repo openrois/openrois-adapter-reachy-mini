@@ -6,12 +6,20 @@ head and the antennas, from wherever the head is, and ends when the expression e
 lists the built-in expressions, and the moves of a recorded library, such as Pollen's
 emotions, when the component loads one. A recorded move plays without its sound, so it
 never talks over speech.
+
+The move plays in a worker thread, which sends the targets of the head, the antennas
+and the body 100 times a second. The SDK sends them on a blocking socket, so over a
+Wi-Fi that stalls a send can block for as long as the stall lasts: the thread waits it
+out, and the adapter goes on serving the other components and the stop meanwhile.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -42,6 +50,13 @@ EMOTIONS_LIBRARY = "pollen-robotics/reachy-mini-emotions-library"
 
 #: The reaction a start plays before any client sets ``reaction_ref``.
 DEFAULT_REACTION = "nod"
+
+# How often a playing move sends its targets, in hertz, as the SDK plays moves.
+_PLAY_FREQUENCY = 100.0
+
+# How long a cut-off reaction waits for its thread to send its last target, in seconds,
+# so that two playbacks never drive the head at once.
+_JOIN = 0.5
 
 #: Reaction with ``nod`` as the default of reaction_ref. Reaction.xml gives none, and the
 #: default lets a client start a reaction before setting any parameter.
@@ -121,12 +136,23 @@ class ReachyMiniReaction(Component):
         if name not in self.reactions():
             raise CommandFailed(CompletedStatus.ERROR, f"No reaction is named {name!r}")
         try:
-            mini = await self._connection.client()
-            logger.info("Playing the reaction %s", name)
-            # A stop, or a new start, cancels the playback here: the head stays where it
-            # is, and the start ends with ABORT. The engine serves stop for a component
-            # that handles start, so no stop handler is needed.
-            await mini.async_play_move(self._move(name, mini), sound=False)
+            # Held, so a new client that the connection takes meanwhile, for working
+            # media, leaves this one connected until the move ends.
+            async with self._connection.hold() as mini:
+                logger.info("Playing the reaction %s", name)
+                move = self._move(name, mini)
+                stop = threading.Event()
+                playback = asyncio.ensure_future(asyncio.to_thread(_play, mini, move, stop))
+                try:
+                    await asyncio.shield(playback)
+                except asyncio.CancelledError:
+                    # A stop, or a new start, ends the playback here: the head stays
+                    # where it is, and the start ends with ABORT. The engine serves stop
+                    # for a component that handles start, so no stop handler is needed.
+                    stop.set()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(asyncio.shield(playback), _JOIN)
+                    raise
         except ConnectionError as exc:
             raise CommandFailed(CompletedStatus.ERROR, f"No Reachy Mini daemon: {exc}") from exc
 
@@ -154,6 +180,30 @@ class ReachyMiniReaction(Component):
             blend=self._blend * self.time_scale,
             interpolate=linear_pose_interpolation,
         )
+
+
+def _play(mini: Any, move: BlendedMove, stop: threading.Event) -> None:
+    """Send the targets of a move until it ends or ``stop`` is set, in a worker thread.
+
+    It plays as the SDK's ``async_play_move`` does, without the move's sound, and sends
+    the head, the antennas and the body in one message for each tick.
+    """
+    period = 1.0 / _PLAY_FREQUENCY
+    last = max(0.0, move.duration - 1e-2)
+    started = time.monotonic()
+    while not stop.is_set():
+        elapsed = time.monotonic() - started
+        # The last tick sends the end of the move, so the head always arrives there.
+        head, antennas, body_yaw = move.evaluate(min(elapsed, last))
+        if head is not None or antennas is not None or body_yaw is not None:
+            mini.set_target(
+                head=head,
+                antennas=list(antennas) if antennas is not None else None,
+                body_yaw=body_yaw,
+            )
+        if elapsed >= last:
+            return
+        stop.wait(max(0.0, period - (time.monotonic() - started - elapsed)))
 
 
 def _load_library(name: str) -> Any:

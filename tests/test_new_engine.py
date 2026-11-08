@@ -29,13 +29,15 @@ from tests._fakes import FakeSdk, pitch_of
 from tests.conftest import Host, Robot
 
 FAST_TONE = ToneSynthesizer(seconds_per_character=0.01, min_seconds=0.05)
+# Plays the reactions faster than real time.
+FAST = 0.3
 ACTING = ("reaction", "speech_synthesis", "person_detection")
 
 
 def four(connection: ReachyMiniConnection) -> dict[str, object]:
     return {
         "system_information": ReachyMiniSystemInformation(connection),
-        "reaction": ReachyMiniReaction(connection),
+        "reaction": ReachyMiniReaction(connection, time_scale=FAST),
         "speech_synthesis": ReachyMiniSpeechSynthesis(connection, FAST_TONE, tail=0.0),
         "person_detection": ReachyMiniPersonDetection(connection, interval=0.01, hold=0.02),
     }
@@ -54,7 +56,7 @@ async def until(check: object, timeout: float = 2.0) -> None:
 
 async def test_set_parameter_applies_before_its_reply(host: Host, sdk: FakeSdk) -> None:
     connection = ReachyMiniConnection(connection_mode="localhost_only")
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
+    robot = await host({"reaction": ReachyMiniReaction(connection, time_scale=FAST)})
     parameters = [{"name": "reaction_ref", "data_type_ref": "", "value": "sad"}]
     result = await robot.call(
         "rois.command.set_parameter", component_ref=robot.refs["reaction"], parameters=parameters
@@ -70,7 +72,7 @@ async def test_set_parameter_inside_execute_applies_before_the_next_command(
     host: Host, sdk: FakeSdk
 ) -> None:
     connection = ReachyMiniConnection(connection_mode="localhost_only")
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
+    robot = await host({"reaction": ReachyMiniReaction(connection, time_scale=FAST)})
     ref = robot.refs["reaction"]
     sequence = [
         {
@@ -89,7 +91,7 @@ async def test_set_parameter_inside_execute_applies_before_the_next_command(
 
 async def test_command_ids_come_from_the_engine(host: Host, sdk: FakeSdk) -> None:
     connection = ReachyMiniConnection(connection_mode="localhost_only")
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
+    robot = await host({"reaction": ReachyMiniReaction(connection, time_scale=FAST)})
     unit = {"component_ref": robot.refs["reaction"], "command_type": "start", "command_id": "mine"}
     result = await robot.call("rois.command.execute", command_unit_list=[unit])
     assert result["return_code"] == "OK"
@@ -154,8 +156,14 @@ async def test_the_connection_is_a_resource_the_engine_opens_once(host: Host, sd
     connection = ReachyMiniConnection(connection_mode="localhost_only")
     assert isinstance(connection, Resource)
     components = four(connection)
-    for component in components.values():
-        assert list(component.rois_resources()) == [connection]  # type: ignore[attr-defined]
+    resources = {name: list(c.rois_resources()) for name, c in components.items()}  # type: ignore[attr-defined]
+    # The components that need the camera or the speaker also use its media.
+    assert resources == {
+        "system_information": [connection],
+        "reaction": [connection],
+        "speech_synthesis": [connection, connection.media],
+        "person_detection": [connection, connection.media],
+    }
     robot = await host(components)
     [client] = sdk.clients
     assert connection.is_open
@@ -207,7 +215,7 @@ async def test_the_watchdog_raises_error_on_the_four_components_while_the_daemon
 
 async def test_the_watchdog_raises_once_per_loss(host: Host, sdk: FakeSdk) -> None:
     connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.01)
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
+    robot = await host({"reaction": ReachyMiniReaction(connection, time_scale=FAST)})
     sdk.stop_daemon()
     await wait_for_errors(robot, 1)
     await asyncio.sleep(0.1)
@@ -217,7 +225,7 @@ async def test_the_watchdog_raises_once_per_loss(host: Host, sdk: FakeSdk) -> No
 async def test_the_daemon_is_tried_once_every_retry(host: Host, sdk: FakeSdk) -> None:
     sdk.stop_daemon()
     connection = ReachyMiniConnection(connection_mode="localhost_only", retry=60.0)
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
+    robot = await host({"reaction": ReachyMiniReaction(connection, time_scale=FAST)})
     sdk.start_daemon()
     # The attempt of the open failed less than a minute ago, so the robot stays in ERROR.
     await asyncio.sleep(0.1)
@@ -229,7 +237,7 @@ async def test_a_lost_daemon_seen_by_a_command_wakes_the_watchdog(host: Host, sd
     # The watchdog checks every minute, but a command that finds the daemon gone does
     # not wait for it: the components go to ERROR at once.
     connection = ReachyMiniConnection(connection_mode="localhost_only", retry=60.0)
-    robot = await host({"reaction": ReachyMiniReaction(connection)})
+    robot = await host({"reaction": ReachyMiniReaction(connection, time_scale=FAST)})
     sdk.stop_daemon()
     assert await robot.run("reaction", "start") == "ERROR"
     await wait_for_errors(robot, 1)
@@ -251,7 +259,7 @@ async def test_a_missing_command_answers_unsupported(host: Host, sdk: FakeSdk) -
     connection = ReachyMiniConnection(connection_mode="localhost_only")
     robot = await host(
         {
-            "reaction": ReachyMiniReaction(connection),
+            "reaction": ReachyMiniReaction(connection, time_scale=FAST),
             "speech_synthesis": ReachyMiniSpeechSynthesis(connection, FAST_TONE),
         }
     )
@@ -267,7 +275,7 @@ async def test_the_four_common_commands_are_served_by_the_engine_default(
     connection = ReachyMiniConnection(connection_mode="localhost_only")
     robot = await host(
         {
-            "reaction": ReachyMiniReaction(connection),
+            "reaction": ReachyMiniReaction(connection, time_scale=FAST),
             "speech_synthesis": ReachyMiniSpeechSynthesis(connection, FAST_TONE),
         }
     )
@@ -277,23 +285,25 @@ async def test_the_four_common_commands_are_served_by_the_engine_default(
     # A suspended Reaction holds its start until the resume.
     assert await robot.run("reaction", "start") == "OK"
     assert await robot.run("reaction", "suspend") == "OK"
+    targets = len(sdk.robot().head_targets)
     start = await robot.execute("reaction", "start")
     await asyncio.sleep(0.1)
-    assert len(sdk.robot().moves) == 1
+    assert len(sdk.robot().head_targets) == targets
     assert await robot.run("reaction", "resume") == "OK"
     assert await robot.completed(start) == "OK"
-    assert len(sdk.robot().moves) == 2
+    assert len(sdk.robot().head_targets) > targets
 
 
 async def test_stop_cancels_the_running_start_which_ends_with_abort(
     host: Host, sdk: FakeSdk
 ) -> None:
-    sdk.speed = 1.0
     connection = ReachyMiniConnection(connection_mode="localhost_only")
     robot = await host({"reaction": ReachyMiniReaction(connection)})
     await robot.set("reaction", reaction_ref="sad")
     start = await robot.execute("reaction", "start")
-    await until(lambda: bool(sdk.robot().moves))
+    await until(lambda: bool(sdk.robot().head_targets))
     assert await robot.run("reaction", "stop") == "OK"
     assert await robot.completed(start) == "ABORT"
-    assert sdk.robot().moves[0].cancelled
+    targets = len(sdk.robot().head_targets)
+    await asyncio.sleep(0.1)
+    assert len(sdk.robot().head_targets) == targets
