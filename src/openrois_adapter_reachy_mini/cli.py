@@ -73,7 +73,9 @@ class ConnectionSettings(_Section):
     lost_after: float = Field(
         default=3.0,
         gt=0,
-        description="Seconds the daemon may send no state before the adapter connects again.",
+        description=(
+            "Seconds the state stream of the daemon may pause before the adapter connects again."
+        ),
     )
 
 

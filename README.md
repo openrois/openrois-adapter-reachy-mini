@@ -68,8 +68,9 @@ The four components share one connection to the robot's daemon. While the daemon
 not answer, every component reports ERROR in `component_status`, the applications that
 bound or subscribed to them get `notify_error`, and their commands and queries are
 refused. Once the daemon is back, the components report READY again. A state stream that
-only pauses for a moment, as over Wi-Fi, changes nothing: the daemon counts as lost once
-it has sent nothing for `connection.lost_after` seconds.
+only pauses for a moment, as over Wi-Fi, raises no error and does not reconnect, though a
+command that runs during the pause can fail: the daemon counts as lost once the pause has
+lasted `connection.lost_after` seconds.
 
 The camera and the speaker can fail while the daemon answers, for example while its
 media server restarts or another application has released it. Then only PersonDetection
@@ -330,7 +331,7 @@ The others are only in the file:
 | `connection.port` | `8000` | The port of the daemon |
 | `connection.timeout` | `5.0` | Seconds to wait for the daemon |
 | `connection.retry` | `3.0` | Seconds between two checks of the daemon |
-| `connection.lost_after` | `3.0` | Seconds the daemon may send no state, its connection open, before the adapter connects again |
+| `connection.lost_after` | `3.0` | Seconds the daemon's state stream may pause, its connection open, before the adapter connects again |
 | `reaction.emotions` | `false` | Add Pollen's recorded emotions to the reactions, from the Hugging Face Hub |
 | `reaction.blend` | `0.3` | Seconds a reaction eases from the current pose into its first pose |
 | `speech_synthesis.piper` | `piper` | The command that runs Piper. `~` stands for the home folder |

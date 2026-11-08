@@ -18,15 +18,17 @@ that comes back is driven again without a restart. Whatever the SDK raises while
 connects, the watchdog keeps trying: only a missing SDK stops the connection for good.
 
 A daemon that closes the connection is lost at once. A daemon whose state stream only
-pauses, as over Wi-Fi now and then, is lost once it has sent nothing for ``lost_after``
-seconds. Until then a command in the pause fails on its own, and nothing reconnects.
+pauses, as over Wi-Fi now and then, is lost once the pause lasts ``lost_after`` seconds,
+counted from the first check that found the stream silent. Until then nothing
+reconnects and no ERROR is raised, but a command that runs in the pause can still fail.
 
 The camera and the speaker come with the SDK client too, but they can fail while the
 daemon answers, for example while the daemon's media server restarts or another client
 has released it. The client then connects without them, so the robot still moves, and
 the connection raises ERROR on ``media``, a second resource that only the components
 that need the camera or the speaker use. The watchdog tries the media again, and clears
-the error once they work.
+the error once they work. A client replaced so is disposed of only once the last
+command that holds it, through ``hold``, has ended.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import ipaddress
 import logging
 import threading
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from openrois.components.core import Resource
@@ -77,8 +80,9 @@ class ReachyMiniConnection(Resource):
         timeout: How long to wait for the daemon, in seconds.
         retry: How often the watchdog checks the daemon, and tries to reach it again
             while it does not answer, in seconds.
-        lost_after: How long the daemon may send no state, its connection still open,
-            before the connection counts it as lost and connects again, in seconds.
+        lost_after: How long the daemon's state stream may pause, its connection still
+            open, before the connection counts the daemon as lost and connects again, in
+            seconds. The pause counts from the first check that finds the stream silent.
 
     Attributes:
         media: The camera and the speaker of the robot, a resource for the components
@@ -106,7 +110,12 @@ class ReachyMiniConnection(Resource):
         self._open = False
         self._lost = False
         self._last_ok = 0.0
-        self._paused = False
+        # When the first check that found the state stream silent began, during a pause.
+        self._paused_since: float | None = None
+        # How many running commands hold each client, by id, and the clients replaced
+        # while held, which are disposed of once the last hold ends.
+        self._holds: dict[int, int] = {}
+        self._retired: dict[int, Any] = {}
         self._media_error: str | None = None
         self._watch_failing = False
         self._wake: asyncio.Event | None = None
@@ -163,6 +172,10 @@ class ReachyMiniConnection(Resource):
                 logger.exception("The Reachy Mini watchdog failed")
             finally:
                 self._watchdog = None
+        retired = list(self._retired.values())
+        self._retired.clear()
+        for old in retired:
+            _dispose(old)
         mini, self._mini = self._mini, None
         if mini is not None:
             with contextlib.suppress(Exception):
@@ -190,12 +203,42 @@ class ReachyMiniConnection(Resource):
                 return mini
             elif await asyncio.to_thread(_alive, mini):
                 self._last_ok = time.monotonic()
+                if self._mini is mini:
+                    self._paused_since = None
                 return mini
             else:
                 raise ConnectionError(
                     f"The Reachy Mini daemon at {_address(mini)} sends no state at the moment"
                 )
         raise ConnectionError(f"The Reachy Mini daemon at {self._where()} does not answer")
+
+    @contextlib.asynccontextmanager
+    async def hold(self) -> AsyncIterator[Any]:
+        """The SDK client, as ``client`` gives it, kept connected while the block runs.
+
+        A command that sends through the client for a while, such as a reaction, holds
+        it: when the watchdog replaces the client by one whose media work, the old one
+        stays connected until the last block that holds it ends. A client whose daemon
+        went away is disposed of at once all the same.
+
+        Raises:
+            RuntimeError: The engine has not opened the connection.
+            ConnectionError: The daemon does not answer.
+        """
+        mini = await self.client()
+        key = id(mini)
+        self._holds[key] = self._holds.get(key, 0) + 1
+        try:
+            yield mini
+        finally:
+            left = self._holds[key] - 1
+            if left:
+                self._holds[key] = left
+            else:
+                del self._holds[key]
+                retired = self._retired.pop(key, None)
+                if retired is not None:
+                    _dispose(retired)
 
     async def _watch(self) -> None:
         """Check the daemon every ``retry`` seconds, and reach it again when it is gone.
@@ -206,7 +249,8 @@ class ReachyMiniConnection(Resource):
         """
         assert self._wake is not None
         while True:
-            interval = min(self.retry, _PAUSED_CHECK) if self._paused else self.retry
+            paused = self._paused_since is not None
+            interval = min(self.retry, _PAUSED_CHECK) if paused else self.retry
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), interval)
             self._wake.clear()
@@ -226,14 +270,19 @@ class ReachyMiniConnection(Resource):
         mini = self._mini
         if mini is not None:
             if not _closed(mini):
+                started = time.monotonic()
                 if await asyncio.to_thread(_alive, mini):
                     self._last_ok = time.monotonic()
-                    self._paused = False
+                    self._paused_since = None
                     if self._media_error is not None:
                         await self._retry_media(mini)
                     return
-                self._paused = True
-                if time.monotonic() - self._last_ok < self.lost_after:
+                # The SDK waits a moment for the state before it says the stream is
+                # silent, and the last good check can be ``retry`` seconds old, so the
+                # pause counts from this check rather than from the last good one.
+                if self._paused_since is None:
+                    self._paused_since = started
+                if time.monotonic() - self._paused_since < self.lost_after:
                     return
             self._drop(mini)
         with contextlib.suppress(ConnectionError):
@@ -243,7 +292,7 @@ class ReachyMiniConnection(Resource):
         """Try a new SDK client for a robot whose media failed, and keep it if they work.
 
         The client in use keeps moving the robot meanwhile, and is disposed of only once
-        the new one has its camera and speaker.
+        the new one has its camera and speaker, and no running command holds it.
         """
         try:
             fresh = await asyncio.to_thread(self._create)
@@ -255,7 +304,11 @@ class ReachyMiniConnection(Resource):
             return
         self._mini = fresh
         self._last_ok = time.monotonic()
-        _dispose(mini)
+        self._paused_since = None
+        if id(mini) in self._holds:
+            self._retired[id(mini)] = mini
+        else:
+            _dispose(mini)
         logger.info("The camera and the speaker of the Reachy Mini at %s work", _address(fresh))
         self._set_media(None)
 
@@ -283,7 +336,7 @@ class ReachyMiniConnection(Resource):
         if self._mini is not mini:
             return
         self._mini = None
-        self._paused = False
+        self._paused_since = None
         logger.warning("Lost the Reachy Mini daemon at %s. Connecting again", _address(mini))
         self._lose(f"Lost the Reachy Mini daemon at {_address(mini)}")
         _dispose(mini)
@@ -334,7 +387,7 @@ class ReachyMiniConnection(Resource):
             raise ConnectionError("The Reachy Mini connection is closed")
         self._mini = mini
         self._last_ok = time.monotonic()
-        self._paused = False
+        self._paused_since = None
         logger.info("Connected to the Reachy Mini daemon at %s", _address(mini))
         self._set_media(_media_error(mini))
         if self._lost:

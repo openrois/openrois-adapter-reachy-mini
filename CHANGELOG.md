@@ -66,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `component_status` says ERROR, and their commands and queries are refused. They report
   READY again once the daemon is back, so the adapter and the daemon start in any order,
   and whatever the SDK raises while it connects, the connection keeps trying. A state
-  stream that pauses for less than `lost_after` seconds changes nothing.
+  stream that pauses for less than `lost_after` seconds raises no error and does not
+  reconnect.
 - `ReachyMiniMedia`, the camera and the speaker of a robot, which PersonDetection and
   SpeechSynthesis use next to the connection. While the media fail and the daemon
   answers, only those two report ERROR, and the robot still moves. A robot whose daemon

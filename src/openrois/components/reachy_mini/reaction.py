@@ -136,21 +136,23 @@ class ReachyMiniReaction(Component):
         if name not in self.reactions():
             raise CommandFailed(CompletedStatus.ERROR, f"No reaction is named {name!r}")
         try:
-            mini = await self._connection.client()
-            logger.info("Playing the reaction %s", name)
-            move = self._move(name, mini)
-            stop = threading.Event()
-            playback = asyncio.ensure_future(asyncio.to_thread(_play, mini, move, stop))
-            try:
-                await asyncio.shield(playback)
-            except asyncio.CancelledError:
-                # A stop, or a new start, ends the playback here: the head stays where
-                # it is, and the start ends with ABORT. The engine serves stop for a
-                # component that handles start, so no stop handler is needed.
-                stop.set()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(asyncio.shield(playback), _JOIN)
-                raise
+            # Held, so a new client that the connection takes meanwhile, for working
+            # media, leaves this one connected until the move ends.
+            async with self._connection.hold() as mini:
+                logger.info("Playing the reaction %s", name)
+                move = self._move(name, mini)
+                stop = threading.Event()
+                playback = asyncio.ensure_future(asyncio.to_thread(_play, mini, move, stop))
+                try:
+                    await asyncio.shield(playback)
+                except asyncio.CancelledError:
+                    # A stop, or a new start, ends the playback here: the head stays
+                    # where it is, and the start ends with ABORT. The engine serves stop
+                    # for a component that handles start, so no stop handler is needed.
+                    stop.set()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(asyncio.shield(playback), _JOIN)
+                    raise
         except ConnectionError as exc:
             raise CommandFailed(CompletedStatus.ERROR, f"No Reachy Mini daemon: {exc}") from exc
 

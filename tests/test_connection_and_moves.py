@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import sys
+import time
 
 import pytest
 
@@ -19,6 +20,7 @@ from openrois.components.reachy_mini import (
     ReachyMiniSystemInformation,
 )
 from openrois.components.reachy_mini.moves import REST_ANTENNAS, BlendedMove, KeyframeMove
+from tests import _fakes
 from tests._fakes import FakeSdk, create_head_pose, linear_pose_interpolation, pitch_of
 from tests.conftest import Host, Robot
 
@@ -251,6 +253,35 @@ async def test_failed_media_leave_the_robot_moving(host: Host, sdk: FakeSdk) -> 
     assert await robot.run("speech_synthesis", "start") == "OK"
 
 
+async def test_a_reaction_keeps_its_client_when_the_media_come_back(
+    host: Host, sdk: FakeSdk
+) -> None:
+    # The new client with working media comes while a reaction sends through the old
+    # one, which stays connected until the move ends.
+    sdk.media_failures.append(ConnectionRefusedError("[Errno 111] Connection refused"))
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.2)
+    robot = await host(
+        {
+            "reaction": ReachyMiniReaction(connection, time_scale=1.0),
+            "speech_synthesis": ReachyMiniSpeechSynthesis(connection),
+        }
+    )
+    assert await robot.status("speech_synthesis") == "ERROR"
+    start = await robot.execute("reaction", "start")
+    async with asyncio.timeout(2.0):
+        while connection.current is not sdk.clients[-1] or len(sdk.clients) < 2:
+            await asyncio.sleep(0.01)
+    old = sdk.clients[0]
+    while not any(p["command_id"] == start for p in robot.sent("rois.command.completed")):
+        assert not old.closed
+        await asyncio.sleep(0.01)
+    assert await robot.completed(start) == "OK"
+    async with asyncio.timeout(1.0):
+        while not old.closed:
+            await asyncio.sleep(0.01)
+    await ready(robot, "speech_synthesis")
+
+
 async def test_media_that_keep_failing_raise_error_on_the_media_components_only(
     host: Host, sdk: FakeSdk, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -306,6 +337,51 @@ async def test_a_short_pause_of_the_state_stream_changes_nothing(host: Host, sdk
     assert robot.sent("rois.system.notify_error") == []
     assert len(sdk.clients) == 1
     assert await robot.run("reaction", "start") == "OK"
+
+
+async def test_a_short_pause_with_the_default_timings_changes_nothing(
+    host: Host, sdk: FakeSdk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The default timings, a fifth as long: the watchdog checks every 0.6 s, a pause
+    # loses the daemon after 0.6 s, and the SDK waits 0.2 s for the state before it says
+    # the stream is silent. Nothing but the watchdog checks the daemon, so the last good
+    # check is a whole interval old when the pause begins.
+    checks: list[float] = []
+
+    def is_connected(self: _fakes.FakeClient) -> bool:
+        checks.append(time.monotonic())
+        deadline = time.monotonic() + 0.2
+        while time.monotonic() < deadline:
+            if not self.lost and not self.stalled:
+                return True
+            time.sleep(0.01)
+        return False
+
+    monkeypatch.setattr(_fakes.FakeClient, "is_connected", is_connected)
+    connection = ReachyMiniConnection(connection_mode="localhost_only", retry=0.6, lost_after=0.6)
+    robot = await host(
+        {
+            "system_information": ReachyMiniSystemInformation(connection),
+            "reaction": ReachyMiniReaction(connection),
+        }
+    )
+    async with asyncio.timeout(2.0):
+        while not checks:
+            await asyncio.sleep(0.005)
+    # A pause of 0.45 s that the next check falls into.
+    await asyncio.sleep(max(0.0, checks[0] + 0.5 - time.monotonic()))
+    sdk.stall()
+    await asyncio.sleep(0.45)
+    sdk.stall(stalled=False)
+    await asyncio.sleep(1.0)
+    assert len(checks) >= 3
+    assert robot.sent("rois.system.notify_error") == []
+    assert len(sdk.clients) == 1
+    # A pause that lasts lost_after from its first silent check still loses the daemon.
+    sdk.stall()
+    async with asyncio.timeout(3.0):
+        while not robot.sent("rois.system.notify_error"):
+            await asyncio.sleep(0.01)
 
 
 async def test_a_long_pause_of_the_state_stream_loses_the_daemon(host: Host, sdk: FakeSdk) -> None:
