@@ -250,7 +250,7 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 reachy-mini-daemon --sim
 ```
 
 An HRI client then connects to the gateway and finds both robots in its profile, for
-example the [HRI client](https://github.com/openrois/openrois/tree/dev/examples/hri-client)
+example the [OpenRoIS Inspector](https://github.com/openrois/openrois/tree/main/apps/inspector)
 of the openrois repository on `ws://localhost:8765`.
 
 ### Check That It Works
