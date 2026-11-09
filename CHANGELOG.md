@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The components mark their RoIS messages with `@command`, `@query` and `@event`, and apply new parameter values with `@command("set_parameter")`, so the adapter requires `openrois-components-core` 0.1.0a2 or later.
+
 ## [0.1.0a1] - 2026-11-08
 
 ### Added

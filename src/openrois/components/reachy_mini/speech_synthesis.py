@@ -37,9 +37,8 @@ from typing import Any
 from openrois.components.core import (
     CommandFailed,
     Component,
+    command,
     component,
-    invoke,
-    on_set_parameter,
     query,
 )
 from openrois.interfaces.components import SPEECH_SYNTHESIS_PROFILE
@@ -151,7 +150,7 @@ class ReachyMiniSpeechSynthesis(Component):
     async def available_voices(self) -> dict[str, object]:
         return {"characters": self._synthesizer.voices()}
 
-    @on_set_parameter
+    @command("set_parameter")
     async def check(self, values: Mapping[str, Any]) -> None:
         volume = values.get("volume")
         if volume is not None and not 0 <= volume <= 100:
@@ -165,7 +164,7 @@ class ReachyMiniSpeechSynthesis(Component):
         if character is not None and character not in voices:
             raise ValueError(f"No voice is named {character!r}. See available_voices")
 
-    @invoke("start")
+    @command("start")
     async def start(self) -> None:
         text = self._text()
         if not text:
@@ -240,7 +239,7 @@ class ReachyMiniSpeechSynthesis(Component):
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(mini.disable_wobbling)
 
-    @invoke("stop")
+    @command("stop")
     async def stop(self) -> None:
         utterance = self._utterance
         if utterance is not None:
