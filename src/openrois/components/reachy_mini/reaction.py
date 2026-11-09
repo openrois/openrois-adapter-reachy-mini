@@ -26,9 +26,8 @@ from typing import Any
 from openrois.components.core import (
     CommandFailed,
     Component,
+    command,
     component,
-    invoke,
-    on_set_parameter,
     query,
 )
 from openrois.interfaces.components import REACTION_PROFILE
@@ -124,13 +123,13 @@ class ReachyMiniReaction(Component):
     async def available_reactions(self) -> dict[str, object]:
         return {"available_reactions": self.reactions()}
 
-    @on_set_parameter
+    @command("set_parameter")
     async def check(self, values: Mapping[str, Any]) -> None:
         name = values.get("reaction_ref")
         if name is not None and name not in self.reactions():
             raise ValueError(f"No reaction is named {name!r}. See available_reactions")
 
-    @invoke("start")
+    @command("start")
     async def start(self) -> None:
         name = self.parameters.get("reaction_ref", DEFAULT_REACTION)
         if name not in self.reactions():

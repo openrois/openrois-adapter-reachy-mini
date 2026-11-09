@@ -30,7 +30,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from openrois.components.core import Component, component, invoke, subscribe
+from openrois.components.core import Component, command, component, event
 from openrois.interfaces.common import ComponentStatus
 from openrois.interfaces.components import PERSON_DETECTION_PROFILE
 
@@ -155,7 +155,7 @@ class ReachyMiniPersonDetection(Component):
                 self.clear_status()
             return
 
-    @invoke("start")
+    @command("start")
     async def start(self) -> None:
         """Start counting, and complete once the count runs. A running count goes on.
 
@@ -168,23 +168,23 @@ class ReachyMiniPersonDetection(Component):
         elif self._count is not None:
             self._report(self._count)
 
-    @invoke("stop")
+    @command("stop")
     async def stop(self) -> None:
         """Stop counting. The next start reports the count again."""
         await self._end()
 
-    @invoke("suspend")
+    @command("suspend")
     async def suspend(self) -> None:
         """Hold the events back while the count keeps running."""
         if self._watcher is not None:
             self._suspended = True
 
-    @invoke("resume")
+    @command("resume")
     async def resume(self) -> None:
         """Send the events again, starting with the count if it changed."""
         self._suspended = False
 
-    @subscribe("person_detected")
+    @event("person_detected")
     async def person_detected(self) -> None:
         pass  # The watcher emits the event when the count changes.
 

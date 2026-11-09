@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openrois-adapter-reachy-mini"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "OpenRoIS adapter for the Pollen Robotics Reachy Mini: canonical RoIS components for the robot and its simulator"
 readme = "README.md"
 license = "Apache-2.0"
@@ -28,7 +28,7 @@ classifiers = [
 # pre-release series, which may change the component API, from breaking this release.
 dependencies = [
     "openrois-interfaces>=0.1.0a6,<0.2",
-    "openrois-components-core>=0.1.0a1,<0.2",
+    "openrois-components-core>=0.1.0a2,<0.2",
     "openrois-engine>=0.1.0a2,<0.2",
 ]
 
