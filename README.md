@@ -32,7 +32,7 @@ serves the robot's four components.
 
 ## Status
 
-Alpha, 0.1.0a1, the first release. The four components and the adapter command run on
+Alpha, 0.1.0a2. The four components and the adapter command run on
 the released `openrois-engine`, `openrois-components-core` and `openrois-interfaces`. The
 whole workflow below passes against Pollen's simulator, and the adapter has driven a
 Reachy Mini Wireless with daemon 1.14.0 over Wi-Fi. The settings and the behaviour may

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-11-09
+
 ### Changed
 
 - The components mark their RoIS messages with `@command`, `@query` and `@event`, and apply new parameter values with `@command("set_parameter")`, so the adapter requires `openrois-components-core` 0.1.0a2 or later.
@@ -88,5 +90,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `resume`: a suspended Reaction or SpeechSynthesis holds its next start until
   `resume`.
 
-[unreleased]: https://github.com/openrois/openrois-adapter-reachy-mini/compare/v0.1.0-alpha.1...HEAD
+[unreleased]: https://github.com/openrois/openrois-adapter-reachy-mini/compare/v0.1.0-alpha.2...HEAD
+[0.1.0a2]: https://github.com/openrois/openrois-adapter-reachy-mini/releases/tag/v0.1.0-alpha.2
 [0.1.0a1]: https://github.com/openrois/openrois-adapter-reachy-mini/releases/tag/v0.1.0-alpha.1
