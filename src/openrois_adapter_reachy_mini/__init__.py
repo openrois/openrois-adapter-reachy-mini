@@ -1,29 +1,12 @@
-"""OpenRoIS reference platform on the Pollen Robotics Reachy Mini.
+"""The OpenRoIS adapter process for the Pollen Robotics Reachy Mini.
 
-An adapter built on the Python adapter SDK, a simulated backend so everything
-runs without the robot, and a one-command bring-up of gateway plus adapter.
-
-Public API:
-    build_engine: An Engine with the platform's components registered.
-    SimulatedBackend: The robot model used without hardware.
-    ReachyMiniBackend: The backend that drives the robot through its SDK.
+The adapter builds an ``Engine`` with the components of
+``openrois.components.reachy_mini`` for one robot, the real Reachy Mini or its simulator,
+and serves it to an OpenRoIS gateway with ``WsClient``. Two adapters with different
+engine ids put both robots behind one gateway. ``ReachyMiniConfig`` holds the settings,
+which ``adapter.yaml`` gives.
 """
 
-from __future__ import annotations
+from openrois_adapter_reachy_mini.cli import ReachyMiniConfig, build_engine, load_config, main
 
-from openrois_adapter_reachy_mini.adapter import backend_from_profile, build_engine
-from openrois_adapter_reachy_mini.backend import (
-    Backend,
-    HeadPose,
-    ReachyMiniBackend,
-    SimulatedBackend,
-)
-
-__all__ = [
-    "Backend",
-    "HeadPose",
-    "ReachyMiniBackend",
-    "SimulatedBackend",
-    "backend_from_profile",
-    "build_engine",
-]
+__all__ = ["ReachyMiniConfig", "build_engine", "load_config", "main"]

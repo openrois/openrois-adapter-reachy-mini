@@ -1,5 +1,5 @@
-# One lint configuration for every Python package in the monorepo. The packages
-# that carry their own [tool.ruff] section use the same values.
+# The lint configuration of the openrois repository, so the components move there
+# unchanged once validated.
 target-version = "py312"
 line-length = 100
 
